@@ -1,0 +1,62 @@
+
+<div class="relative w-full h-screen bg-slate-950 overflow-hidden">
+  
+  <!-- 3D Canvas Container -->
+  <div #canvasContainer class="w-full h-full absolute top-0 left-0"></div>
+
+  <!-- UI Overlay -->
+  <div class="absolute top-4 left-4 z-10 pointer-events-none">
+    <h1 class="text-2xl font-bold text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.8)]">
+      Service Broker Pattern
+    </h1>
+    <p class="text-cyan-100/70 text-sm mt-1 max-w-md">
+      Visualizing 3D microservice architecture communications.
+      <br/>
+      <span class="text-xs text-yellow-400">Drag to rotate • Scroll to zoom • Right-click to pan</span>
+    </p>
+  </div>
+
+  <!-- Controls -->
+  <div class="absolute bottom-6 left-6 z-10 flex gap-2 pointer-events-auto">
+    <button 
+      (click)="resetCamera()"
+      class="px-4 py-2 bg-slate-800/80 hover:bg-slate-700 text-cyan-400 border border-cyan-500/30 rounded backdrop-blur-sm transition-all shadow-[0_0_15px_rgba(34,211,238,0.1)] text-sm font-semibold">
+      Reset View
+    </button>
+    <button 
+      (click)="togglePulses()"
+      class="px-4 py-2 bg-slate-800/80 hover:bg-slate-700 text-pink-400 border border-pink-500/30 rounded backdrop-blur-sm transition-all shadow-[0_0_15px_rgba(244,114,182,0.1)] text-sm font-semibold">
+      Toggle Traffic
+    </button>
+  </div>
+
+  <!-- Info Panel (Shows when a node is hovered/clicked - simulated here by update callback) -->
+  @if (selectedNodeName()) {
+    <div class="absolute top-4 right-4 z-10 w-64 bg-slate-900/90 border border-slate-700 rounded-lg p-4 backdrop-blur-md shadow-2xl transition-all animate-fadeIn pointer-events-none">
+      <h2 class="text-lg font-bold text-white border-b border-slate-700 pb-2 mb-2">
+        {{ selectedNodeName() }}
+      </h2>
+      <p class="text-slate-300 text-sm leading-relaxed">
+        {{ selectedNodeDescription() }}
+      </p>
+    </div>
+  }
+
+  <!-- Legend -->
+  <div class="absolute bottom-6 right-6 z-10 bg-slate-900/80 p-3 rounded-lg border border-slate-800 backdrop-blur-sm pointer-events-none">
+    <div class="flex flex-col gap-2 text-xs text-slate-300">
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-cyan-500 shadow-[0_0_8px_cyan]"></span> Clients
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-purple-500 shadow-[0_0_8px_purple]"></span> Gateway
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-yellow-500 shadow-[0_0_8px_yellow]"></span> Registry
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_green]"></span> Services
+      </div>
+    </div>
+  </div>
+</div>
