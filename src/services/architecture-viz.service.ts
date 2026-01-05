@@ -124,6 +124,19 @@ export class ArchitectureVizService {
       scale: 4
     });
 
+    // --- OBSERVABILITY STACK (New) ---
+    nodesConfig.push({
+      id: 'observability',
+      label: 'Observability Stack',
+      description: 'Centralized Logging (ELK) and Metrics (Prometheus) for the entire mesh.',
+      position: new THREE.Vector3(15, 38, -10),
+      color: 0x7c3aed, // Violet
+      geometryType: 'dodecahedron',
+      scale: 2.5
+    });
+    connections.push({ from: 'hostServer', to: 'observability', color: 0x7c3aed });
+    connections.push({ from: 'gateway', to: 'observability', color: 0x7c3aed }); // Gateway sends logs
+
     // --- MAIN CLUSTER (API & Business Logic) ---
     // Positioned at Y=0
     nodesConfig.push(
@@ -146,6 +159,16 @@ export class ArchitectureVizService {
         color: 0xd946ef, 
         geometryType: 'octahedron', 
         scale: 3 
+      },
+      // CACHE (New)
+      { 
+        id: 'cache', 
+        label: 'Redis Cache', 
+        description: 'High-performance in-memory cache to reduce latency.',
+        position: new THREE.Vector3(-8, 8, 5), 
+        color: 0xff3333, // Red
+        geometryType: 'box', 
+        scale: 1.5 
       },
       // SUPPORT
       { 
@@ -231,6 +254,25 @@ export class ArchitectureVizService {
         color: 0x8b5cf6, 
         geometryType: 'box', 
         scale: 1.5 
+      },
+      // DATABASES (New)
+      { 
+        id: 'dbA', 
+        label: 'SQL DB (A)', 
+        description: 'Primary relational database for Service A.',
+        position: new THREE.Vector3(75, 15, 5), 
+        color: 0x475569, // Slate
+        geometryType: 'cylinder', 
+        scale: 1.2 
+      },
+      { 
+        id: 'dbB', 
+        label: 'NoSQL DB (B)', 
+        description: 'Document store for Service B data processing.',
+        position: new THREE.Vector3(75, 8, 5), 
+        color: 0x475569, // Slate
+        geometryType: 'cylinder', 
+        scale: 1.2 
       }
     );
 
@@ -332,6 +374,7 @@ export class ArchitectureVizService {
     connections.push(
       { from: 'gateway', to: 'registry', color: 0xeab308 },
       { from: 'gateway', to: 'limiter', color: 0xf43f5e },
+      { from: 'gateway', to: 'cache', color: 0xff3333 }, // Cache Connection
       { from: 'proxy', to: 'gateway', color: 0x10b981 },
       { from: 'gateway', to: 'broker', color: 0xd946ef },
       { from: 'broker', to: 'transformer', color: 0xf97316 },
@@ -339,7 +382,9 @@ export class ArchitectureVizService {
       { from: 'broker', to: 'brokerService2', color: 0xf97316 },
       { from: 'broker', to: 'brokerService3', color: 0xf97316 },
       { from: 'transformer', to: 'serviceA', color: 0x3b82f6 },
-      { from: 'transformer', to: 'serviceB', color: 0x3b82f6 }
+      { from: 'transformer', to: 'serviceB', color: 0x3b82f6 },
+      { from: 'serviceA', to: 'dbA', color: 0x475569 }, // DB Connection
+      { from: 'serviceB', to: 'dbB', color: 0x475569 }  // DB Connection
     );
 
     // 3. Secondary Cluster Internal
