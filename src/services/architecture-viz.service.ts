@@ -53,12 +53,11 @@ export class ArchitectureVizService {
     this.scene.fog = new THREE.FogExp2(0x000510, 0.008);
 
     // 2. Setup Camera
-    // Initial size might be 0, we update in resize
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
     
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-    this.camera.position.set(0, 30, 90); // Zoomed out to fit expanded layout
+    this.camera.position.set(-20, 40, 120); // Adjusted angle to see both clusters
 
     // 3. Setup Renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -71,7 +70,7 @@ export class ArchitectureVizService {
     this.labelRenderer.setSize(width, height);
     this.labelRenderer.domElement.style.position = 'absolute';
     this.labelRenderer.domElement.style.top = '0px';
-    this.labelRenderer.domElement.style.pointerEvents = 'none'; // Allow clicks to pass through
+    this.labelRenderer.domElement.style.pointerEvents = 'none';
     container.appendChild(this.labelRenderer.domElement);
 
     // 5. Controls
@@ -79,7 +78,7 @@ export class ArchitectureVizService {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
     this.controls.minDistance = 10;
-    this.controls.maxDistance = 200;
+    this.controls.maxDistance = 300;
 
     // 6. Lights
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
@@ -97,178 +96,263 @@ export class ArchitectureVizService {
     this.createArchitecture();
 
     // 8. Event Listeners
-    // Use ResizeObserver for robust sizing
     this.resizeObserver = new ResizeObserver(() => {
         this.onWindowResize();
     });
     this.resizeObserver.observe(container);
 
-    // We attach mouse move to the renderer canvas for raycasting
     this.renderer.domElement.addEventListener('mousemove', this.onMouseMove.bind(this));
 
     // 9. Start Loop
     this.ngZone.runOutsideAngular(() => this.animate());
     
-    // Force initial resize check after a microtask, just in case DOM wasn't ready
     setTimeout(() => this.onWindowResize(), 0);
   }
 
   private createArchitecture() {
-    // Define Nodes
-    const nodesConfig: NodeConfig[] = [
-      // PROXY: Moved "in front" of Gateway (Left side)
+    const nodesConfig: NodeConfig[] = [];
+    const connections: Connection[] = [];
+
+    // --- HOST SERVER (Central Infrastructure) ---
+    nodesConfig.push({
+      id: 'hostServer',
+      label: 'Service Registration Host',
+      description: 'Central infrastructure node. Proxies and Gateways register here for service discovery and health checks.',
+      position: new THREE.Vector3(0, 35, -10),
+      color: 0x94a3b8, // Slate Gray
+      geometryType: 'cylinder',
+      scale: 4
+    });
+
+    // --- MAIN CLUSTER (API & Business Logic) ---
+    // Positioned at Y=0
+    nodesConfig.push(
+      // PROXY
       { 
         id: 'proxy', 
         label: 'Gateway Proxies', 
         description: 'Decouples the API Gateway from external traffic and handles load balancing.',
         position: new THREE.Vector3(-25, 0, 0), 
-        color: 0x10b981, // Emerald
+        color: 0x10b981, 
         geometryType: 'torus', 
         scale: 2.5
       },
-      // API GATEWAY: Center
+      // API GATEWAY
       { 
         id: 'gateway', 
         label: 'API Gateway', 
         description: 'Single entry point. Routes requests to the Service Broker.',
         position: new THREE.Vector3(0, 0, 0), 
-        color: 0xd946ef, // Fuchsia
+        color: 0xd946ef, 
         geometryType: 'octahedron', 
         scale: 3 
       },
-      // SUPPORT: Registry & Limiter attached to Gateway
+      // SUPPORT
       { 
         id: 'registry', 
         label: 'Service Registry', 
-        description: 'Database of available service instances and their locations.',
+        description: 'Database of available service instances.',
         position: new THREE.Vector3(0, 12, -5), 
-        color: 0xeab308, // Yellow
+        color: 0xeab308, 
         geometryType: 'cylinder', 
         scale: 2 
       },
       { 
         id: 'limiter', 
         label: 'Rate Limiter', 
-        description: 'Controls the rate of traffic sent or received by the network.',
+        description: 'Controls traffic rate.',
         position: new THREE.Vector3(0, -12, -5), 
-        color: 0xf43f5e, // Rose
+        color: 0xf43f5e, 
         geometryType: 'box', 
         scale: 2 
       },
-      // SERVICE BROKER: Right of Gateway
+      // BROKER
       { 
         id: 'broker', 
         label: 'Service Broker', 
-        description: 'Central message bus/middleware. Manages service discovery, routing, and decoupling.',
+        description: 'Central message bus/middleware.',
         position: new THREE.Vector3(25, 0, 0), 
-        color: 0xf97316, // Orange
+        color: 0xf97316, 
         geometryType: 'dodecahedron', 
         scale: 2.5 
       },
-      // TRANSFORMER: Upper Right Branch
+      // TRANSFORMER
       { 
         id: 'transformer', 
         label: 'REST Transformer', 
-        description: 'Adapts and transforms messages between different formats.',
+        description: 'Adapts and transforms messages.',
         position: new THREE.Vector3(45, 12, 0), 
-        color: 0x3b82f6, // Blue
+        color: 0x3b82f6, 
         geometryType: 'icosahedron', 
         scale: 2 
       },
-      // BROKER RELIANT SERVICES: Lower Right Branch (Cluster)
+      // SERVICES
       { 
         id: 'brokerService1', 
         label: 'Auth Service', 
-        description: 'Broker-reliant service for authentication.',
+        description: 'Broker-reliant authentication.',
         position: new THREE.Vector3(45, -10, 0), 
-        color: 0x14b8a6, // Teal
+        color: 0x14b8a6, 
         geometryType: 'sphere', 
         scale: 2 
       },
       { 
         id: 'brokerService2', 
         label: 'Audit Log', 
-        description: 'Broker-reliant service for logging events.',
+        description: 'Broker-reliant logging.',
         position: new THREE.Vector3(55, -15, 5), 
-        color: 0x14b8a6, // Teal
+        color: 0x14b8a6, 
         geometryType: 'sphere', 
         scale: 1.8 
       },
       { 
         id: 'brokerService3', 
         label: 'Notification Svc', 
-        description: 'Broker-reliant service for dispatching alerts.',
+        description: 'Broker-reliant alerts.',
         position: new THREE.Vector3(40, -18, -5), 
-        color: 0x14b8a6, // Teal
+        color: 0x14b8a6, 
         geometryType: 'sphere', 
         scale: 1.8 
       },
-      // REST SERVICES: Far Right
       { 
         id: 'serviceA', 
         label: 'REST Service A', 
-        description: 'Core business logic microservice.',
+        description: 'Core business logic.',
         position: new THREE.Vector3(65, 15, 5), 
-        color: 0x8b5cf6, // Violet
+        color: 0x8b5cf6, 
         geometryType: 'box', 
         scale: 1.5 
       },
       { 
         id: 'serviceB', 
         label: 'REST Service B', 
-        description: 'Data processing microservice.',
+        description: 'Data processing.',
         position: new THREE.Vector3(65, 8, 5), 
-        color: 0x8b5cf6, // Violet
+        color: 0x8b5cf6, 
         geometryType: 'box', 
         scale: 1.5 
       }
-    ];
+    );
 
-    // Create Clients (Cluster) - Further Left
+    // Main Cluster Clients
     for (let i = 0; i < 5; i++) {
       const angle = (i / 5) * Math.PI * 2;
       const radius = 8;
       nodesConfig.push({
         id: `client_${i}`,
-        label: i === 2 ? 'Clients' : '', // Only label one
-        description: 'External applications consuming the API.',
+        label: i === 2 ? 'Clients' : '',
+        description: 'External applications.',
         position: new THREE.Vector3(-50, Math.cos(angle) * radius, Math.sin(angle) * radius),
-        color: 0x06b6d4, // Cyan
+        color: 0x06b6d4, 
         geometryType: 'sphere',
         scale: 1
       });
-    }
-
-    // Build Nodes
-    nodesConfig.forEach(config => this.createNode(config));
-
-    // Define Connections
-    const connections: Connection[] = [
-      // Gateway Support
-      { from: 'gateway', to: 'registry', color: 0xeab308 },
-      { from: 'gateway', to: 'limiter', color: 0xf43f5e },
-      
-      // Main Pipeline: Proxy -> Gateway -> Broker
-      { from: 'proxy', to: 'gateway', color: 0x10b981 }, // Emerald
-      { from: 'gateway', to: 'broker', color: 0xd946ef }, // Fuchsia
-
-      // Broker Distribution
-      { from: 'broker', to: 'transformer', color: 0xf97316 }, // Orange Out
-      { from: 'broker', to: 'brokerService1', color: 0xf97316 }, // Orange Out
-      { from: 'broker', to: 'brokerService2', color: 0xf97316 }, // Orange Out
-      { from: 'broker', to: 'brokerService3', color: 0xf97316 }, // Orange Out
-      
-      // Transformer -> REST Services
-      { from: 'transformer', to: 'serviceA', color: 0x3b82f6 },
-      { from: 'transformer', to: 'serviceB', color: 0x3b82f6 },
-    ];
-
-    // Connect all clients to Proxy
-    for (let i = 0; i < 5; i++) {
       connections.push({ from: `client_${i}`, to: 'proxy', color: 0x06b6d4 });
     }
 
-    // Build Connections
+    // --- SECONDARY CLUSTER (Exports/Uploads) ---
+    // Shifted Up and "Back" in Z to distinguish
+    const clusterY = 25;
+    const clusterZ = 25;
+    
+    nodesConfig.push(
+      { 
+        id: 'exportProxy', 
+        label: 'Upload Proxy', 
+        description: 'Dedicated proxy for large file uploads and export requests.',
+        position: new THREE.Vector3(-25, clusterY, clusterZ), 
+        color: 0xec4899, // Pink
+        geometryType: 'torus', 
+        scale: 2
+      },
+      { 
+        id: 'exportGateway', 
+        label: 'Export Gateway', 
+        description: 'Gateway for batch operations.',
+        position: new THREE.Vector3(0, clusterY, clusterZ), 
+        color: 0xd946ef, // Fuchsia
+        geometryType: 'octahedron', 
+        scale: 2.5 
+      },
+      { 
+        id: 'exportTransformer', 
+        label: 'Format Transformer', 
+        description: 'Converts data streams to CSV/PDF/JSON.',
+        position: new THREE.Vector3(20, clusterY, clusterZ), 
+        color: 0x3b82f6, // Blue
+        geometryType: 'icosahedron', 
+        scale: 1.8 
+      },
+      { 
+        id: 'exportStorage', 
+        label: 'Blob Storage', 
+        description: 'High-capacity object storage for uploads.',
+        position: new THREE.Vector3(35, clusterY + 5, clusterZ + 5), 
+        color: 0x6366f1, // Indigo
+        geometryType: 'box', 
+        scale: 1.8 
+      },
+      { 
+        id: 'exportArchive', 
+        label: 'Archiver Svc', 
+        description: 'Compresses and archives old exports.',
+        position: new THREE.Vector3(35, clusterY - 5, clusterZ + 5), 
+        color: 0x8b5cf6, // Violet
+        geometryType: 'box', 
+        scale: 1.5 
+      }
+    );
+
+    // Secondary Clients
+    for (let i = 0; i < 3; i++) {
+      nodesConfig.push({
+        id: `exportClient_${i}`,
+        label: i === 1 ? 'Upload Clients' : '',
+        description: 'Batch processing clients.',
+        position: new THREE.Vector3(-45, clusterY + (i-1)*5, clusterZ),
+        color: 0xf472b6, // Light Pink
+        geometryType: 'sphere',
+        scale: 1
+      });
+      connections.push({ from: `exportClient_${i}`, to: 'exportProxy', color: 0xf472b6 });
+    }
+
+
+    // --- CONNECTIONS ---
+
+    // 1. Host Server Registration (Vertical Connectors)
+    connections.push(
+      { from: 'gateway', to: 'hostServer', color: 0x94a3b8 },
+      { from: 'proxy', to: 'hostServer', color: 0x94a3b8 },
+      { from: 'exportGateway', to: 'hostServer', color: 0x94a3b8 },
+      { from: 'exportProxy', to: 'hostServer', color: 0x94a3b8 }
+    );
+
+    // 2. Main Cluster Internal
+    connections.push(
+      { from: 'gateway', to: 'registry', color: 0xeab308 },
+      { from: 'gateway', to: 'limiter', color: 0xf43f5e },
+      { from: 'proxy', to: 'gateway', color: 0x10b981 },
+      { from: 'gateway', to: 'broker', color: 0xd946ef },
+      { from: 'broker', to: 'transformer', color: 0xf97316 },
+      { from: 'broker', to: 'brokerService1', color: 0xf97316 },
+      { from: 'broker', to: 'brokerService2', color: 0xf97316 },
+      { from: 'broker', to: 'brokerService3', color: 0xf97316 },
+      { from: 'transformer', to: 'serviceA', color: 0x3b82f6 },
+      { from: 'transformer', to: 'serviceB', color: 0x3b82f6 }
+    );
+
+    // 3. Secondary Cluster Internal
+    connections.push(
+      { from: 'exportProxy', to: 'exportGateway', color: 0xec4899 },
+      { from: 'exportGateway', to: 'exportTransformer', color: 0xd946ef },
+      { from: 'exportTransformer', to: 'exportStorage', color: 0x3b82f6 },
+      { from: 'exportTransformer', to: 'exportArchive', color: 0x3b82f6 }
+    );
+
+
+    // Build All
+    nodesConfig.forEach(config => this.createNode(config));
     connections.forEach(conn => this.createConnection(conn));
   }
 
@@ -468,7 +552,7 @@ export class ArchitectureVizService {
 
   resetCamera() {
     if (!this.camera || !this.controls) return;
-    this.camera.position.set(0, 30, 90);
+    this.camera.position.set(-20, 40, 120);
     this.controls.target.set(0, 0, 0);
     this.controls.update();
   }
