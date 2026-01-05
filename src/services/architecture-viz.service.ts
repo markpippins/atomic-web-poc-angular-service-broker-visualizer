@@ -1,23 +1,28 @@
 
-import { Injectable, NgZone } from '@angular/core';
+import { Injectable, NgZone, Signal, signal, WritableSignal } from '@angular/core';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer';
+import { Subject } from 'rxjs';
+import { NodeType, getComponentConfig, COMPONENT_REGISTRY } from '../config/component-config';
 
-interface NodeConfig {
+export type { NodeType } from '../config/component-config';
+
+export interface NodeData {
   id: string;
+  type: NodeType;
   label: string;
   description: string;
-  position: THREE.Vector3;
-  color: number;
-  geometryType: 'box' | 'sphere' | 'octahedron' | 'torus' | 'cylinder' | 'icosahedron' | 'dodecahedron';
-  scale: number;
+  position: { x: number; y: number; z: number };
+  color: string;
+  connectedTo: string[]; // List of IDs this node sends data to
 }
 
-interface Connection {
-  from: string;
-  to: string;
-  color: number;
+interface VisualNode {
+  mesh: THREE.Mesh;
+  data: NodeData;
+  labelObj?: CSS2DObject;
+  wireframe?: THREE.LineSegments;
 }
 
 @Injectable({
@@ -32,20 +37,36 @@ export class ArchitectureVizService {
   private animationId: number | null = null;
   private container!: HTMLElement;
 
-  private nodes: Map<string, THREE.Mesh> = new Map();
-  private pulses: { mesh: THREE.Mesh; path: THREE.CatmullRomCurve3; progress: number; speed: number }[] = [];
+  // State
+  private nodes: Map<string, VisualNode> = new Map();
+  // Key: "fromId::toId" (using :: as separator because UUIDs contain -)
+  private connectionLines: Map<string, THREE.Line> = new Map(); 
   
-  private isAnimating = true;
-  private onNodeHover?: (name: string | null, desc: string | null) => void;
+  // Selection & Interaction
+  private selectionBox!: THREE.BoxHelper;
+  private selectedNodeId: string | null = null;
+  private interactionMode: 'camera' | 'edit' = 'camera';
+  
+  // Dragging State
+  private isDragging = false;
+  private dragPlane = new THREE.Plane();
+  private dragOffset = new THREE.Vector3();
+  private draggedNodeId: string | null = null;
+  
+  // Signals & Events
+  public selectedNodeData: WritableSignal<NodeData | null> = signal(null);
+  public allNodes: WritableSignal<NodeData[]> = signal([]);
+  public nodeDoubleClicked = new Subject<string>();
+  public modeSignal: WritableSignal<'camera' | 'edit'> = signal('camera');
+
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
   private resizeObserver: ResizeObserver | null = null;
 
   constructor(private ngZone: NgZone) {}
 
-  initialize(container: HTMLElement, hoverCallback: (name: string | null, desc: string | null) => void) {
+  initialize(container: HTMLElement) {
     this.container = container;
-    this.onNodeHover = hoverCallback;
 
     // 1. Setup Scene
     this.scene = new THREE.Scene();
@@ -55,14 +76,14 @@ export class ArchitectureVizService {
     // 2. Setup Camera
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
-    
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-    this.camera.position.set(-20, 40, 120); // Adjusted angle to see both clusters
+    this.camera.position.set(-20, 40, 120);
 
     // 3. Setup Renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.renderer.domElement.style.outline = 'none';
     container.appendChild(this.renderer.domElement);
 
     // 4. Setup Label Renderer
@@ -77,545 +98,468 @@ export class ArchitectureVizService {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
-    this.controls.minDistance = 10;
-    this.controls.maxDistance = 300;
 
     // 6. Lights
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
     this.scene.add(ambientLight);
-
     const pointLight = new THREE.PointLight(0xffffff, 1);
     pointLight.position.set(20, 20, 20);
     this.scene.add(pointLight);
-
     const pointLight2 = new THREE.PointLight(0x4444ff, 0.8);
     pointLight2.position.set(-20, -10, 10);
     this.scene.add(pointLight2);
 
-    // 7. Create Architecture
-    this.createArchitecture();
+    // 7. Helpers
+    this.selectionBox = new THREE.BoxHelper(new THREE.Mesh(new THREE.BoxGeometry(1,1,1)), 0xffff00);
+    this.selectionBox.visible = false;
+    this.scene.add(this.selectionBox);
 
     // 8. Event Listeners
-    this.resizeObserver = new ResizeObserver(() => {
-        this.onWindowResize();
-    });
+    this.resizeObserver = new ResizeObserver(() => this.onWindowResize());
     this.resizeObserver.observe(container);
-
-    this.renderer.domElement.addEventListener('mousemove', this.onMouseMove.bind(this));
+    
+    // We attach pointer events to the Renderer DOM Element
+    this.renderer.domElement.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.renderer.domElement.addEventListener('pointermove', (e) => this.onPointerMove(e));
+    this.renderer.domElement.addEventListener('pointerup', (e) => this.onPointerUp(e));
+    this.renderer.domElement.addEventListener('dblclick', (e) => this.onDoubleClick(e));
 
     // 9. Start Loop
+    this.loadDefaultScene();
     this.ngZone.runOutsideAngular(() => this.animate());
-    
     setTimeout(() => this.onWindowResize(), 0);
   }
 
-  private createArchitecture() {
-    const nodesConfig: NodeConfig[] = [];
-    const connections: Connection[] = [];
+  // --- Core Operations ---
 
-    // --- HOST SERVER (Central Infrastructure) ---
-    nodesConfig.push({
-      id: 'hostServer',
-      label: 'Service Registration Host',
-      description: 'Central infrastructure node. Proxies and Gateways register here for service discovery and health checks.',
-      position: new THREE.Vector3(0, 35, -10),
-      color: 0x94a3b8, // Slate Gray
-      geometryType: 'cylinder',
-      scale: 4
-    });
-
-    // --- OBSERVABILITY STACK (New) ---
-    nodesConfig.push({
-      id: 'observability',
-      label: 'Observability Stack',
-      description: 'Centralized Logging (ELK) and Metrics (Prometheus) for the entire mesh.',
-      position: new THREE.Vector3(15, 38, -10),
-      color: 0x7c3aed, // Violet
-      geometryType: 'dodecahedron',
-      scale: 2.5
-    });
-    connections.push({ from: 'hostServer', to: 'observability', color: 0x7c3aed });
-    connections.push({ from: 'gateway', to: 'observability', color: 0x7c3aed }); // Gateway sends logs
-
-    // --- MAIN CLUSTER (API & Business Logic) ---
-    // Positioned at Y=0
-    nodesConfig.push(
-      // PROXY
-      { 
-        id: 'proxy', 
-        label: 'Gateway Proxies', 
-        description: 'Decouples the API Gateway from external traffic and handles load balancing.',
-        position: new THREE.Vector3(-25, 0, 0), 
-        color: 0x10b981, 
-        geometryType: 'torus', 
-        scale: 2.5
-      },
-      // API GATEWAY
-      { 
-        id: 'gateway', 
-        label: 'API Gateway', 
-        description: 'Single entry point. Routes requests to the Service Broker.',
-        position: new THREE.Vector3(0, 0, 0), 
-        color: 0xd946ef, 
-        geometryType: 'octahedron', 
-        scale: 3 
-      },
-      // CACHE (New)
-      { 
-        id: 'cache', 
-        label: 'Redis Cache', 
-        description: 'High-performance in-memory cache to reduce latency.',
-        position: new THREE.Vector3(-8, 8, 5), 
-        color: 0xff3333, // Red
-        geometryType: 'box', 
-        scale: 1.5 
-      },
-      // SUPPORT
-      { 
-        id: 'registry', 
-        label: 'Service Registry', 
-        description: 'Database of available service instances.',
-        position: new THREE.Vector3(0, 12, -5), 
-        color: 0xeab308, 
-        geometryType: 'cylinder', 
-        scale: 2 
-      },
-      { 
-        id: 'limiter', 
-        label: 'Rate Limiter', 
-        description: 'Controls traffic rate.',
-        position: new THREE.Vector3(0, -12, -5), 
-        color: 0xf43f5e, 
-        geometryType: 'box', 
-        scale: 2 
-      },
-      // BROKER
-      { 
-        id: 'broker', 
-        label: 'Service Broker', 
-        description: 'Central message bus/middleware.',
-        position: new THREE.Vector3(25, 0, 0), 
-        color: 0xf97316, 
-        geometryType: 'dodecahedron', 
-        scale: 2.5 
-      },
-      // TRANSFORMER
-      { 
-        id: 'transformer', 
-        label: 'REST Transformer', 
-        description: 'Adapts and transforms messages.',
-        position: new THREE.Vector3(45, 12, 0), 
-        color: 0x3b82f6, 
-        geometryType: 'icosahedron', 
-        scale: 2 
-      },
-      // SERVICES
-      { 
-        id: 'brokerService1', 
-        label: 'Auth Service', 
-        description: 'Broker-reliant authentication.',
-        position: new THREE.Vector3(45, -10, 0), 
-        color: 0x14b8a6, 
-        geometryType: 'sphere', 
-        scale: 2 
-      },
-      { 
-        id: 'brokerService2', 
-        label: 'Audit Log', 
-        description: 'Broker-reliant logging.',
-        position: new THREE.Vector3(55, -15, 5), 
-        color: 0x14b8a6, 
-        geometryType: 'sphere', 
-        scale: 1.8 
-      },
-      { 
-        id: 'brokerService3', 
-        label: 'Notification Svc', 
-        description: 'Broker-reliant alerts.',
-        position: new THREE.Vector3(40, -18, -5), 
-        color: 0x14b8a6, 
-        geometryType: 'sphere', 
-        scale: 1.8 
-      },
-      { 
-        id: 'serviceA', 
-        label: 'REST Service A', 
-        description: 'Core business logic.',
-        position: new THREE.Vector3(65, 15, 5), 
-        color: 0x8b5cf6, 
-        geometryType: 'box', 
-        scale: 1.5 
-      },
-      { 
-        id: 'serviceB', 
-        label: 'REST Service B', 
-        description: 'Data processing.',
-        position: new THREE.Vector3(65, 8, 5), 
-        color: 0x8b5cf6, 
-        geometryType: 'box', 
-        scale: 1.5 
-      },
-      // DATABASES (New)
-      { 
-        id: 'dbA', 
-        label: 'SQL DB (A)', 
-        description: 'Primary relational database for Service A.',
-        position: new THREE.Vector3(75, 15, 5), 
-        color: 0x475569, // Slate
-        geometryType: 'cylinder', 
-        scale: 1.2 
-      },
-      { 
-        id: 'dbB', 
-        label: 'NoSQL DB (B)', 
-        description: 'Document store for Service B data processing.',
-        position: new THREE.Vector3(75, 8, 5), 
-        color: 0x475569, // Slate
-        geometryType: 'cylinder', 
-        scale: 1.2 
-      }
-    );
-
-    // Main Cluster Clients
-    for (let i = 0; i < 5; i++) {
-      const angle = (i / 5) * Math.PI * 2;
-      const radius = 8;
-      nodesConfig.push({
-        id: `client_${i}`,
-        label: i === 2 ? 'Clients' : '',
-        description: 'External applications.',
-        position: new THREE.Vector3(-50, Math.cos(angle) * radius, Math.sin(angle) * radius),
-        color: 0x06b6d4, 
-        geometryType: 'sphere',
-        scale: 1
-      });
-      connections.push({ from: `client_${i}`, to: 'proxy', color: 0x06b6d4 });
-    }
-
-    // --- SECONDARY CLUSTER (Exports/Uploads) ---
-    // Shifted Up and "Back" in Z to distinguish
-    const clusterY = 25;
-    const clusterZ = 25;
+  public setInteractionMode(mode: 'camera' | 'edit') {
+    this.interactionMode = mode;
+    this.modeSignal.set(mode);
     
-    nodesConfig.push(
-      { 
-        id: 'exportProxy', 
-        label: 'Upload Proxy', 
-        description: 'Dedicated proxy for large file uploads and export requests.',
-        position: new THREE.Vector3(-25, clusterY, clusterZ), 
-        color: 0xec4899, // Pink
-        geometryType: 'torus', 
-        scale: 2
-      },
-      { 
-        id: 'exportGateway', 
-        label: 'Export Gateway', 
-        description: 'Gateway for batch operations.',
-        position: new THREE.Vector3(0, clusterY, clusterZ), 
-        color: 0xd946ef, // Fuchsia
-        geometryType: 'octahedron', 
-        scale: 2.5 
-      },
-      { 
-        id: 'exportTransformer', 
-        label: 'Format Transformer', 
-        description: 'Converts data streams to CSV/PDF/JSON.',
-        position: new THREE.Vector3(20, clusterY, clusterZ), 
-        color: 0x3b82f6, // Blue
-        geometryType: 'icosahedron', 
-        scale: 1.8 
-      },
-      { 
-        id: 'exportStorage', 
-        label: 'Blob Storage', 
-        description: 'High-capacity object storage for uploads.',
-        position: new THREE.Vector3(35, clusterY + 5, clusterZ + 5), 
-        color: 0x6366f1, // Indigo
-        geometryType: 'box', 
-        scale: 1.8 
-      },
-      { 
-        id: 'exportArchive', 
-        label: 'Archiver Svc', 
-        description: 'Compresses and archives old exports.',
-        position: new THREE.Vector3(35, clusterY - 5, clusterZ + 5), 
-        color: 0x8b5cf6, // Violet
-        geometryType: 'box', 
-        scale: 1.5 
-      }
-    );
+    // Enable/Disable Orbit Controls based on mode
+    this.controls.enabled = (mode === 'camera');
+    
+    // Visual cursor feedback
+    this.renderer.domElement.style.cursor = mode === 'camera' ? 'grab' : 'default';
 
-    // Secondary Clients
-    for (let i = 0; i < 3; i++) {
-      nodesConfig.push({
-        id: `exportClient_${i}`,
-        label: i === 1 ? 'Upload Clients' : '',
-        description: 'Batch processing clients.',
-        position: new THREE.Vector3(-45, clusterY + (i-1)*5, clusterZ),
-        color: 0xf472b6, // Light Pink
-        geometryType: 'sphere',
-        scale: 1
-      });
-      connections.push({ from: `exportClient_${i}`, to: 'exportProxy', color: 0xf472b6 });
-    }
-
-
-    // --- CONNECTIONS ---
-
-    // 1. Host Server Registration (Vertical Connectors)
-    connections.push(
-      { from: 'gateway', to: 'hostServer', color: 0x94a3b8 },
-      { from: 'proxy', to: 'hostServer', color: 0x94a3b8 },
-      { from: 'exportGateway', to: 'hostServer', color: 0x94a3b8 },
-      { from: 'exportProxy', to: 'hostServer', color: 0x94a3b8 }
-    );
-
-    // 2. Main Cluster Internal
-    connections.push(
-      { from: 'gateway', to: 'registry', color: 0xeab308 },
-      { from: 'gateway', to: 'limiter', color: 0xf43f5e },
-      { from: 'gateway', to: 'cache', color: 0xff3333 }, // Cache Connection
-      { from: 'proxy', to: 'gateway', color: 0x10b981 },
-      { from: 'gateway', to: 'broker', color: 0xd946ef },
-      { from: 'broker', to: 'transformer', color: 0xf97316 },
-      { from: 'broker', to: 'brokerService1', color: 0xf97316 },
-      { from: 'broker', to: 'brokerService2', color: 0xf97316 },
-      { from: 'broker', to: 'brokerService3', color: 0xf97316 },
-      { from: 'transformer', to: 'serviceA', color: 0x3b82f6 },
-      { from: 'transformer', to: 'serviceB', color: 0x3b82f6 },
-      { from: 'serviceA', to: 'dbA', color: 0x475569 }, // DB Connection
-      { from: 'serviceB', to: 'dbB', color: 0x475569 }  // DB Connection
-    );
-
-    // 3. Secondary Cluster Internal
-    connections.push(
-      { from: 'exportProxy', to: 'exportGateway', color: 0xec4899 },
-      { from: 'exportGateway', to: 'exportTransformer', color: 0xd946ef },
-      { from: 'exportTransformer', to: 'exportStorage', color: 0x3b82f6 },
-      { from: 'exportTransformer', to: 'exportArchive', color: 0x3b82f6 }
-    );
-
-
-    // Build All
-    nodesConfig.forEach(config => this.createNode(config));
-    connections.forEach(conn => this.createConnection(conn));
+    // Force update connections to ensure they are consistent with current positions
+    this.updateAllConnections();
   }
 
-  private createNode(config: NodeConfig) {
-    let geometry: THREE.BufferGeometry;
-    switch (config.geometryType) {
-      case 'box': geometry = new THREE.BoxGeometry(1, 1, 1); break;
-      case 'sphere': geometry = new THREE.SphereGeometry(0.7, 32, 16); break;
-      case 'octahedron': geometry = new THREE.OctahedronGeometry(1); break;
-      case 'torus': geometry = new THREE.TorusGeometry(0.7, 0.2, 16, 100); break;
-      case 'cylinder': geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32); break;
-      case 'icosahedron': geometry = new THREE.IcosahedronGeometry(1); break;
-      case 'dodecahedron': geometry = new THREE.DodecahedronGeometry(1); break;
-      default: geometry = new THREE.BoxGeometry(1, 1, 1);
+  public clearScene() {
+    this.nodes.forEach(node => {
+      this.scene.remove(node.mesh);
+      if (node.labelObj) node.mesh.remove(node.labelObj);
+      node.mesh.geometry.dispose();
+      (node.mesh.material as THREE.Material).dispose();
+    });
+    this.nodes.clear();
+    this.connectionLines.forEach(line => {
+      this.scene.remove(line);
+      line.geometry.dispose();
+    });
+    this.connectionLines.clear();
+    this.deselect();
+    this.allNodes.set([]);
+  }
+
+  public addNode(
+    type: NodeType, 
+    pos: { x: number, y: number, z: number } = {x: 0, y: 0, z: 0},
+    label?: string,
+    description: string = 'Description...',
+    colorOverride?: string
+  ): string {
+    const id = crypto.randomUUID();
+    const config = getComponentConfig(type);
+    
+    const colorHex = colorOverride ? parseInt(colorOverride.replace('#', ''), 16) : config.defaultColor;
+
+    // Auto-generate label based on Registry Default Prefix if not provided
+    if (!label) {
+      const count = Array.from(this.nodes.values()).filter(n => n.data.type === type).length;
+      label = `${config.defaultNamePrefix} ${count + 1}`;
     }
 
+    let geometry: THREE.BufferGeometry;
+    switch (config.geometry) {
+      case 'sphere': geometry = new THREE.SphereGeometry(0.7, 32, 16); break;
+      case 'torus': geometry = new THREE.TorusGeometry(0.7, 0.2, 16, 100); break;
+      case 'octahedron': geometry = new THREE.OctahedronGeometry(1); break;
+      case 'cylinder': geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32); break;
+      case 'icosahedron': geometry = new THREE.IcosahedronGeometry(1); break;
+      case 'box': geometry = new THREE.BoxGeometry(1, 1, 1); break;
+      case 'tall-cylinder': geometry = new THREE.CylinderGeometry(0.8, 0.8, 3, 32); break;
+      default: geometry = new THREE.BoxGeometry(1, 1, 1);
+    }
     const material = new THREE.MeshPhongMaterial({
-      color: config.color,
-      emissive: config.color,
-      emissiveIntensity: 0.2,
-      shininess: 100,
-      flatShading: true
+      color: colorHex, emissive: colorHex, emissiveIntensity: 0.2, shininess: 100, flatShading: true
     });
 
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.copy(config.position);
+    mesh.position.set(pos.x, pos.y, pos.z);
     mesh.scale.setScalar(config.scale);
-    mesh.userData = { 
-      id: config.id, 
-      originalScale: config.scale,
-      description: config.description,
-      name: config.label
-    };
+    mesh.userData = { id, type };
 
-    // Add glowing wireframe overlay
     const wireGeo = new THREE.WireframeGeometry(geometry);
     const wireMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.1 });
     const wireframe = new THREE.LineSegments(wireGeo, wireMat);
     mesh.add(wireframe);
 
-    this.scene.add(mesh);
-    this.nodes.set(config.id, mesh);
-
-    // Add HTML Label
-    if (config.label) {
+    let labelObj: CSS2DObject | undefined;
+    if (label) {
       const div = document.createElement('div');
       div.className = 'label';
-      div.textContent = config.label;
-      const label = new CSS2DObject(div);
-      label.position.set(0, 1.5, 0); // Offset above the object
-      mesh.add(label);
+      div.textContent = label;
+      labelObj = new CSS2DObject(div);
+      labelObj.position.set(0, config.geometry === 'tall-cylinder' ? 2 : 1.5, 0);
+      mesh.add(labelObj);
     }
-  }
 
-  private createConnection(conn: Connection) {
-    const startNode = this.nodes.get(conn.from);
-    const endNode = this.nodes.get(conn.to);
-    if (!startNode || !endNode) return;
-
-    // Create visual line
-    const start = startNode.position;
-    const end = endNode.position;
-    
-    // Create curve for smoother look
-    const distance = start.distanceTo(end);
-    const midPoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-    // Add a slight arc upwards or sideways based on distance to make it look organic
-    midPoint.y += distance * 0.1; 
-
-    const curve = new THREE.CatmullRomCurve3([
-      start,
-      midPoint,
-      end
-    ]);
-
-    const points = curve.getPoints(50);
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    const material = new THREE.LineBasicMaterial({ 
-      color: conn.color, 
-      transparent: true, 
-      opacity: 0.15 
-    });
-    
-    const line = new THREE.Line(geometry, material);
-    this.scene.add(line);
-
-    // Start pulses on this path
-    // We add multiple pulses with random offsets
-    const pulseCount = 2;
-    for (let i = 0; i < pulseCount; i++) {
-      this.createPulse(curve, conn.color, Math.random());
-    }
-  }
-
-  private createPulse(path: THREE.CatmullRomCurve3, color: number, startProgress: number) {
-    const geometry = new THREE.SphereGeometry(0.3, 8, 8);
-    const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const mesh = new THREE.Mesh(geometry, material);
-    
-    // Create a light trail for the pulse
-    const light = new THREE.PointLight(color, 2, 8);
-    mesh.add(light);
+    const nodeData: NodeData = {
+      id, type, label, description, position: pos, 
+      color: '#' + new THREE.Color(colorHex).getHexString(),
+      connectedTo: [] 
+    };
 
     this.scene.add(mesh);
+    this.nodes.set(id, { mesh, data: nodeData, labelObj, wireframe });
+    this.updateAllNodesSignal();
 
-    this.pulses.push({
-      mesh,
-      path,
-      progress: startProgress,
-      speed: 0.005 + Math.random() * 0.005 // Variable speed
-    });
+    return id;
   }
 
-  private animate() {
-    this.animationId = requestAnimationFrame(() => this.animate());
+  public updateNode(id: string, updates: Partial<NodeData>) {
+    const node = this.nodes.get(id);
+    if (!node) return;
 
-    if (this.controls) this.controls.update();
+    node.data = { ...node.data, ...updates };
 
-    const time = Date.now() * 0.001;
+    if (updates.position) {
+      node.mesh.position.set(updates.position.x, updates.position.y, updates.position.z);
+      // Connections will be updated in the next frame of animate loop
+    }
 
-    // Animate Nodes (Float gently)
-    this.nodes.forEach((mesh, id) => {
-      // Different float phases based on position to avoid uniformity
-      mesh.position.y += Math.sin(time + mesh.position.x) * 0.02;
-      mesh.rotation.y += 0.005;
-      
-      // Interaction highlight pulse
-      if (mesh.userData['hovered']) {
-        const s = mesh.userData['originalScale'] * (1 + Math.sin(time * 10) * 0.1);
-        mesh.scale.setScalar(s);
-      } else {
-        // Return to normal
-        mesh.scale.lerp(new THREE.Vector3().setScalar(mesh.userData['originalScale']), 0.1);
+    if (updates.color) {
+      const color = new THREE.Color(updates.color);
+      (node.mesh.material as THREE.MeshPhongMaterial).color = color;
+      (node.mesh.material as THREE.MeshPhongMaterial).emissive = color;
+    }
+
+    if (updates.label !== undefined && node.labelObj) {
+      node.labelObj.element.textContent = updates.label;
+    }
+
+    if (this.selectedNodeId === id) {
+      this.selectionBox.update();
+      this.selectedNodeData.set(node.data);
+    }
+    this.updateAllNodesSignal();
+  }
+
+  public deleteNode(id: string) {
+    const node = this.nodes.get(id);
+    if (!node) return;
+    
+    node.data.connectedTo.forEach(targetId => this.removeVisualConnection(id, targetId));
+    
+    this.nodes.forEach(otherNode => {
+      if (otherNode.data.connectedTo.includes(id)) {
+        this.disconnectNodes(otherNode.data.id, id);
       }
     });
 
-    // Animate Pulses
-    if (this.isAnimating) {
-      this.pulses.forEach(pulse => {
-        pulse.progress += pulse.speed;
-        if (pulse.progress > 1) pulse.progress = 0;
-        
-        const point = pulse.path.getPoint(pulse.progress);
-        pulse.mesh.position.copy(point);
-      });
+    this.scene.remove(node.mesh);
+    this.nodes.delete(id);
+
+    if (this.selectedNodeId === id) this.deselect();
+    this.updateAllNodesSignal();
+  }
+
+  // --- Connection Management ---
+
+  public connectNodes(fromId: string, toId: string) {
+    const fromNode = this.nodes.get(fromId);
+    const toNode = this.nodes.get(toId);
+    if (!fromNode || !toNode) return;
+    
+    // Check Config Rules
+    const fromConfig = getComponentConfig(fromNode.data.type);
+    const allowed = fromConfig.allowedConnections;
+    
+    if (allowed !== 'all' && !allowed.includes(toNode.data.type)) {
+      console.warn(`Connection not allowed: ${fromNode.data.type} cannot connect to ${toNode.data.type}`);
+      return; 
     }
+
+    if (fromNode.data.connectedTo.includes(toId)) return;
+    fromNode.data.connectedTo.push(toId);
+    this.createVisualConnection(fromId, toId);
+    if (this.selectedNodeId === fromId) this.selectedNodeData.set(fromNode.data);
+  }
+
+  public disconnectNodes(fromId: string, toId: string) {
+    const fromNode = this.nodes.get(fromId);
+    if (!fromNode) return;
+    fromNode.data.connectedTo = fromNode.data.connectedTo.filter(id => id !== toId);
+    this.removeVisualConnection(fromId, toId);
+    if (this.selectedNodeId === fromId) this.selectedNodeData.set(fromNode.data);
+  }
+
+  private createVisualConnection(fromId: string, toId: string) {
+    // We use :: separator to avoid conflict with UUID hyphens
+    const key = `${fromId}::${toId}`;
+    if (this.connectionLines.has(key)) return;
+    const fromNode = this.nodes.get(fromId);
+    const toNode = this.nodes.get(toId);
+    if (!fromNode || !toNode) return;
+    
+    const points = [fromNode.mesh.position, toNode.mesh.position];
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineBasicMaterial({ color: 0x4aa8d8, transparent: true, opacity: 0.4 });
+    const line = new THREE.Line(geometry, material);
+    
+    // Store IDs in userData so we don't have to parse the string key later
+    line.userData = { fromId, toId };
+    
+    this.scene.add(line);
+    this.connectionLines.set(key, line);
+  }
+
+  private removeVisualConnection(fromId: string, toId: string) {
+    const key = `${fromId}::${toId}`;
+    const line = this.connectionLines.get(key);
+    if (line) {
+      this.scene.remove(line);
+      line.geometry.dispose();
+      this.connectionLines.delete(key);
+    }
+  }
+
+  private updateAllConnections() {
+    this.connectionLines.forEach((line) => {
+      // Use userData to get IDs reliably
+      const { fromId, toId } = line.userData;
+      
+      const fromNode = this.nodes.get(fromId);
+      const toNode = this.nodes.get(toId);
+      
+      if (fromNode && toNode) {
+        const positions = line.geometry.attributes['position'].array as Float32Array;
+        
+        // Update positions
+        positions[0] = fromNode.mesh.position.x;
+        positions[1] = fromNode.mesh.position.y;
+        positions[2] = fromNode.mesh.position.z;
+        positions[3] = toNode.mesh.position.x;
+        positions[4] = toNode.mesh.position.y;
+        positions[5] = toNode.mesh.position.z;
+        
+        line.geometry.attributes['position'].needsUpdate = true;
+        
+        // Important to update bounding sphere so lines don't get culled if they stretch far
+        line.geometry.computeBoundingSphere();
+      }
+    });
+  }
+
+  // --- Input & Interaction Handling ---
+
+  private onPointerDown(event: PointerEvent) {
+    if (event.button !== 0) return; // Only Left Click
+
+    const intersects = this.raycast(event);
+    
+    if (intersects.length > 0) {
+      // Hit a node
+      const object = intersects[0].object;
+      const id = object.userData['id'];
+      
+      // Select it
+      this.selectNode(id);
+
+      // If Edit Mode, Start Dragging
+      if (this.interactionMode === 'edit') {
+        this.isDragging = true;
+        this.draggedNodeId = id;
+        this.controls.enabled = false; // Ensure controls don't fight
+
+        // Create a drag plane at the object's position, facing the camera
+        const normal = new THREE.Vector3();
+        this.camera.getWorldDirection(normal);
+        normal.negate(); // Plane normal faces camera
+        this.dragPlane.setFromNormalAndCoplanarPoint(normal, object.position);
+
+        // Calculate offset
+        const intersectionPoint = intersects[0].point;
+        this.dragOffset.subVectors(object.position, intersectionPoint);
+
+        this.renderer.domElement.style.cursor = 'grabbing';
+      }
+    } else {
+      // Hit nothing
+      this.deselect();
+    }
+  }
+
+  private onPointerMove(event: PointerEvent) {
+    if (this.isDragging && this.draggedNodeId && this.interactionMode === 'edit') {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      
+      this.raycaster.setFromCamera(this.mouse, this.camera);
+      const targetPoint = new THREE.Vector3();
+      
+      // Raycast against the invisible drag plane
+      if (this.raycaster.ray.intersectPlane(this.dragPlane, targetPoint)) {
+        // Apply offset
+        targetPoint.add(this.dragOffset);
+        
+        // Update Mesh Position
+        const node = this.nodes.get(this.draggedNodeId);
+        if (node) {
+          node.mesh.position.copy(targetPoint);
+          node.data.position = { x: targetPoint.x, y: targetPoint.y, z: targetPoint.z };
+          
+          this.selectionBox.update();
+          // Connections are updated in the animate loop now
+        }
+      }
+    }
+  }
+
+  private onPointerUp(event: PointerEvent) {
+    if (this.isDragging && this.draggedNodeId) {
+      // Finalize Drag
+      const node = this.nodes.get(this.draggedNodeId);
+      if (node) {
+        this.selectedNodeData.set({ ...node.data }); // Trigger UI update
+        this.updateAllNodesSignal();
+      }
+      
+      this.isDragging = false;
+      this.draggedNodeId = null;
+      this.renderer.domElement.style.cursor = 'default';
+    }
+  }
+
+  private onDoubleClick(event: MouseEvent) {
+    // Double click always selects and focuses
+    const intersects = this.raycast(event);
+    if (intersects.length > 0) {
+      const id = intersects[0].object.userData['id'];
+      this.selectNode(id);
+      this.nodeDoubleClicked.next(id);
+    }
+  }
+
+  private raycast(event: MouseEvent | PointerEvent) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    // Intersect the Meshes
+    return this.raycaster.intersectObjects(
+      Array.from(this.nodes.values()).map(n => n.mesh), 
+      false // Not recursive, we only want the main mesh
+    );
+  }
+
+  public selectNode(id: string) {
+    const node = this.nodes.get(id);
+    if (!node) return;
+    
+    // De-select previous if different
+    if (this.selectedNodeId && this.selectedNodeId !== id) {
+       // logic if needed
+    }
+
+    this.selectedNodeId = id;
+    this.selectionBox.setFromObject(node.mesh);
+    this.selectionBox.visible = true;
+    
+    // We create a new object ref to trigger signal
+    this.selectedNodeData.set({ ...node.data });
+  }
+
+  public deselect() {
+    this.selectedNodeId = null;
+    this.selectionBox.visible = false;
+    this.selectedNodeData.set(null);
+  }
+
+  private updateAllNodesSignal() {
+    this.allNodes.set(Array.from(this.nodes.values()).map(n => n.data));
+  }
+
+  // --- Animation & Config ---
+
+  private animate() {
+    this.animationId = requestAnimationFrame(() => this.animate());
+    if (this.controls && this.controls.enabled) this.controls.update();
+
+    const time = Date.now() * 0.001;
+    this.nodes.forEach(node => {
+        // Only float if not selected and not dragging
+        if (node.data.id !== this.selectedNodeId && !this.isDragging) {
+           node.mesh.position.y = node.data.position.y + Math.sin(time + node.mesh.position.x) * 0.02;
+        }
+        node.mesh.rotation.y += 0.002;
+    });
+
+    // Keep connections in sync with floating nodes
+    this.updateAllConnections();
 
     this.renderer.render(this.scene, this.camera);
     this.labelRenderer.render(this.scene, this.camera);
   }
 
-  private onMouseMove(event: MouseEvent) {
-    // Calculate mouse position in normalized device coordinates
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-    this.raycaster.setFromCamera(this.mouse, this.camera);
-
-    const intersects = this.raycaster.intersectObjects(Array.from(this.nodes.values()));
-
-    // Reset all hovered states
-    this.nodes.forEach(n => n.userData['hovered'] = false);
-
-    if (intersects.length > 0) {
-      const object = intersects[0].object;
-      object.userData['hovered'] = true;
-      
-      // Notify UI
-      if (this.onNodeHover) {
-        this.onNodeHover(object.userData['name'], object.userData['description']);
-      }
-      
-      document.body.style.cursor = 'pointer';
-    } else {
-      if (this.onNodeHover) {
-        this.onNodeHover(null, null);
-      }
-      document.body.style.cursor = 'default';
-    }
-  }
-
   private onWindowResize() {
-    if (!this.container || !this.camera || !this.renderer) return;
-    
+    if (!this.container) return;
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
-
-    if (width === 0 || height === 0) return;
-
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-
     this.renderer.setSize(width, height);
     this.labelRenderer.setSize(width, height);
   }
 
-  resetCamera() {
-    if (!this.camera || !this.controls) return;
-    this.camera.position.set(-20, 40, 120);
-    this.controls.target.set(0, 0, 0);
-    this.controls.update();
+  public dispose() {
+    if (this.animationId) cancelAnimationFrame(this.animationId);
+    if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this.renderer) this.renderer.dispose();
   }
 
-  toggleAnimation() {
-    this.isAnimating = !this.isAnimating;
-  }
+  // --- Default Scenario ---
 
-  dispose() {
-    if (this.animationId) {
-      cancelAnimationFrame(this.animationId);
-    }
-    if (this.resizeObserver) {
-        this.resizeObserver.disconnect();
-    }
-    // Cleanup if necessary
-    if (this.renderer) {
-        this.renderer.dispose();
+  public loadDefaultScene() {
+    this.clearScene();
+
+    const host = this.addNode('host', { x: 0, y: 35, z: -10 }, 'Host Server', 'Central Authority');
+    const obs = this.addNode('internal', { x: 15, y: 38, z: -10 }, 'Observability', 'ELK Stack', '#7c3aed');
+    this.connectNodes(host, obs);
+
+    const gateway = this.addNode('gateway', { x: 0, y: 0, z: 0 }, 'API Gateway', 'Ingress');
+    const proxy = this.addNode('proxy', { x: -25, y: 0, z: 0 }, 'Proxies', 'Load Balancer');
+    this.connectNodes(proxy, gateway);
+    this.connectNodes(gateway, host);
+
+    const broker = this.addNode('transformer', { x: 25, y: 0, z: 0 }, 'Service Broker', 'Message Bus', '#f97316');
+    this.connectNodes(gateway, broker);
+
+    const auth = this.addNode('internal', { x: 25, y: 15, z: 0 }, 'Auth Svc', 'Security', '#14b8a6');
+    this.connectNodes(gateway, auth);
+    
+    const extA = this.addNode('external', { x: 50, y: 10, z: 5 }, 'External A', 'Payment Provider');
+    const extB = this.addNode('external', { x: 50, y: -10, z: 5 }, 'External B', 'Logistics');
+    
+    this.connectNodes(broker, extA);
+    this.connectNodes(broker, extB);
+
+    for(let i=0; i<3; i++) {
+        const c = this.addNode('client', { x: -50, y: (i-1)*10, z: 0 });
+        this.connectNodes(c, proxy);
     }
   }
 }
