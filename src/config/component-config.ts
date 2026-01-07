@@ -1,26 +1,35 @@
 
-export type NodeType = 'client' | 'proxy' | 'gateway' | 'host' | 'transformer' | 'external' | 'internal';
+export type NodeType = string; // Relaxed from union type to string to support dynamic types
 
 export interface ComponentConfig {
-  type: NodeType;
-  label: string; // Display label in Palette
-  defaultNamePrefix: string; // Prefix for auto-generated names (e.g., "Client")
+  id: string;            // Unique Internal ID
+  type: NodeType;        // Slug used in code/save files (e.g., 'client', 'custom-1')
+  label: string;         // Display label
+  defaultNamePrefix: string; 
+  description?: string;
   
+  // Inheritance
+  parentId?: string;     // ID of the component this extends
+  isSystem?: boolean;    // If true, cannot be deleted/edited
+  category?: string;     // For grouping
+
   // 3D Visual Properties
   geometry: 'sphere' | 'torus' | 'octahedron' | 'cylinder' | 'icosahedron' | 'box' | 'tall-cylinder';
-  defaultColor: number; // Hex number for Three.js
+  defaultColor: number; 
   scale: number;
 
   // UI Palette Properties
-  iconClass: string; // Tailwind classes for shape/style
-  colorClass: string; // Tailwind classes for background color
+  iconClass: string; 
+  colorClass: string; 
   
   // Logic Rules
-  allowedConnections: NodeType[] | 'all'; // List of types this component can output to
+  allowedConnections: NodeType[] | 'all'; 
 }
 
-export const COMPONENT_REGISTRY: ComponentConfig[] = [
+// Initial System Components
+export const INITIAL_REGISTRY: ComponentConfig[] = [
   { 
+    id: 'sys-client',
     type: 'client', 
     label: 'Client', 
     defaultNamePrefix: 'Client',
@@ -29,9 +38,12 @@ export const COMPONENT_REGISTRY: ComponentConfig[] = [
     scale: 1,
     iconClass: 'rounded-full',
     colorClass: 'bg-cyan-500',
-    allowedConnections: ['proxy', 'gateway'] // Clients usually connect to ingress
+    allowedConnections: ['proxy', 'gateway'],
+    isSystem: true,
+    category: 'Ingress'
   },
   { 
+    id: 'sys-proxy',
     type: 'proxy', 
     label: 'Gateway Proxy', 
     defaultNamePrefix: 'Proxy',
@@ -40,9 +52,12 @@ export const COMPONENT_REGISTRY: ComponentConfig[] = [
     scale: 2.5,
     iconClass: 'rounded-full ring-4 ring-emerald-500',
     colorClass: 'bg-transparent',
-    allowedConnections: ['gateway']
+    allowedConnections: ['gateway'],
+    isSystem: true,
+    category: 'Ingress'
   },
   { 
+    id: 'sys-gateway',
     type: 'gateway', 
     label: 'API Gateway', 
     defaultNamePrefix: 'Gateway',
@@ -51,9 +66,12 @@ export const COMPONENT_REGISTRY: ComponentConfig[] = [
     scale: 3,
     iconClass: 'rotate-45',
     colorClass: 'bg-fuchsia-500',
-    allowedConnections: ['host', 'transformer', 'internal']
+    allowedConnections: ['host', 'transformer', 'internal'],
+    isSystem: true,
+    category: 'Core'
   },
   { 
+    id: 'sys-host',
     type: 'host', 
     label: 'Host Server', 
     defaultNamePrefix: 'Host',
@@ -62,9 +80,12 @@ export const COMPONENT_REGISTRY: ComponentConfig[] = [
     scale: 2,
     iconClass: 'rounded-sm',
     colorClass: 'bg-slate-400 h-6',
-    allowedConnections: ['internal', 'external']
+    allowedConnections: ['internal', 'external'],
+    isSystem: true,
+    category: 'Infrastructure'
   },
   { 
+    id: 'sys-transformer',
     type: 'transformer', 
     label: 'Transformer / Broker', 
     defaultNamePrefix: 'Broker',
@@ -73,9 +94,12 @@ export const COMPONENT_REGISTRY: ComponentConfig[] = [
     scale: 2,
     iconClass: 'rounded-lg',
     colorClass: 'bg-blue-500',
-    allowedConnections: ['external', 'internal']
+    allowedConnections: ['external', 'internal'],
+    isSystem: true,
+    category: 'Integration'
   },
   { 
+    id: 'sys-internal',
     type: 'internal', 
     label: 'Internal Svc', 
     defaultNamePrefix: 'Service',
@@ -84,9 +108,12 @@ export const COMPONENT_REGISTRY: ComponentConfig[] = [
     scale: 1.5,
     iconClass: 'rounded-sm',
     colorClass: 'bg-yellow-500',
-    allowedConnections: ['internal', 'host'] // Microservices often talk to each other
+    allowedConnections: ['internal', 'host'],
+    isSystem: true,
+    category: 'Core'
   },
   { 
+    id: 'sys-external',
     type: 'external', 
     label: 'External Svc', 
     defaultNamePrefix: 'External',
@@ -95,12 +122,12 @@ export const COMPONENT_REGISTRY: ComponentConfig[] = [
     scale: 2,
     iconClass: 'rounded-sm',
     colorClass: 'bg-violet-500 w-5 h-5',
-    allowedConnections: [] // Usually an endpoint, doesn't initiate calls back in this diagram
+    allowedConnections: [],
+    isSystem: true,
+    category: 'External'
   },
 ];
 
-export const getComponentConfig = (type: NodeType): ComponentConfig => {
-  const config = COMPONENT_REGISTRY.find(c => c.type === type);
-  if (!config) throw new Error(`Configuration for type ${type} not found`);
-  return config;
-};
+// Deprecated: Use ComponentRegistryService instead
+export const COMPONENT_REGISTRY = INITIAL_REGISTRY;
+export const getComponentConfig = (type: NodeType) => INITIAL_REGISTRY.find(c => c.type === type)!;

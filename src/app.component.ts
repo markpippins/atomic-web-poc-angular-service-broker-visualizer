@@ -3,29 +3,36 @@ import { Component, ElementRef, ViewChild, AfterViewInit, OnDestroy, signal, eff
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ArchitectureVizService, NodeData } from './services/architecture-viz.service';
-import { NodeType, COMPONENT_REGISTRY, getComponentConfig } from './config/component-config';
+import { NodeType } from './config/component-config';
+import { ComponentRegistryService } from './services/component-registry.service';
+import { ComponentCreatorComponent } from './components/component-creator.component';
 import { Subscription } from 'rxjs';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, ComponentCreatorComponent],
   templateUrl: './app.component.html',
   styleUrls: []
 })
 export class AppComponent implements AfterViewInit, OnDestroy {
   @ViewChild('canvasContainer') canvasContainer!: ElementRef<HTMLDivElement>;
   @ViewChild('labelInput') labelInput!: ElementRef<HTMLInputElement>;
+  @ViewChild('fileInput') fileInput!: ElementRef<HTMLInputElement>;
   
+  // Tab State
+  activeTab = signal<'canvas' | 'creator'>('canvas');
+
   // UI Panels
   isPaletteOpen = signal(true);
   isInspectorOpen = signal(true);
   
   // Interaction Mode
   currentMode = this.vizService.modeSignal;
+  isSimulationActive = this.vizService.isSimulationActive;
 
-  // Tools - loaded from Registry
-  toolItems = COMPONENT_REGISTRY;
+  // Tools - loaded from Registry Service
+  toolItems = this.registry.allComponents;
 
   // Inspector Form Data
   selectedNode = this.vizService.selectedNodeData;
@@ -38,7 +45,7 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     if (!current) return [];
     
     // Get connection rules for current node type
-    const config = getComponentConfig(current.type);
+    const config = this.registry.getConfig(current.type);
     
     return all.filter(n => {
       // Rule 1: Cannot connect to self
@@ -76,7 +83,10 @@ export class AppComponent implements AfterViewInit, OnDestroy {
 
   private sub = new Subscription();
 
-  constructor(private vizService: ArchitectureVizService) {
+  constructor(
+      private vizService: ArchitectureVizService,
+      private registry: ComponentRegistryService
+  ) {
     // Sync Selected Node to Form
     effect(() => {
       const node = this.selectedNode();
@@ -87,7 +97,11 @@ export class AppComponent implements AfterViewInit, OnDestroy {
         this.formX = Number(node.position.x.toFixed(2));
         this.formY = Number(node.position.y.toFixed(2));
         this.formZ = Number(node.position.z.toFixed(2));
-        this.isInspectorOpen.set(true); 
+        
+        // Only open inspector if we are in canvas mode
+        if (this.activeTab() === 'canvas') {
+            this.isInspectorOpen.set(true); 
+        }
         this.selectedTargetId = ''; // Reset dropdown
       }
     });
@@ -101,6 +115,8 @@ export class AppComponent implements AfterViewInit, OnDestroy {
   }
 
   ngAfterViewInit() {
+    // We only initialize if the container is present (which depends on the tab)
+    // But since we use display:none or similar, we might want to check
     if (this.canvasContainer) {
       this.vizService.initialize(this.canvasContainer.nativeElement);
     }
@@ -111,10 +127,18 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     this.sub.unsubscribe();
   }
 
+  switchTab(tab: 'canvas' | 'creator') {
+      this.activeTab.set(tab);
+  }
+
   // --- Actions ---
   
   setMode(mode: 'camera' | 'edit') {
     this.vizService.setInteractionMode(mode);
+  }
+  
+  toggleSimulation() {
+    this.vizService.toggleSimulation(!this.isSimulationActive());
   }
 
   addNode(type: NodeType) {
@@ -136,6 +160,39 @@ export class AppComponent implements AfterViewInit, OnDestroy {
      if(confirm('Discard changes and reload default demo?')) {
        this.vizService.loadDefaultScene();
      }
+  }
+  
+  // --- Save / Load ---
+  
+  saveJson() {
+    const json = this.vizService.exportSceneToJson();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'architecture-diagram.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  
+  triggerLoad() {
+    this.fileInput.nativeElement.click();
+  }
+  
+  onFileSelected(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const file = input.files[0];
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const result = e.target?.result;
+        if (typeof result === 'string') {
+           this.vizService.importSceneFromJson(result);
+           input.value = ''; // Reset
+        }
+      };
+      reader.readAsText(file);
+    }
   }
 
   // --- Form Handling ---

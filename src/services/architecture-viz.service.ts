@@ -4,7 +4,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer';
 import { Subject } from 'rxjs';
-import { NodeType, getComponentConfig, COMPONENT_REGISTRY } from '../config/component-config';
+import { NodeType } from '../config/component-config';
+import { ComponentRegistryService } from './component-registry.service';
 
 export type { NodeType } from '../config/component-config';
 
@@ -23,6 +24,14 @@ interface VisualNode {
   data: NodeData;
   labelObj?: CSS2DObject;
   wireframe?: THREE.LineSegments;
+}
+
+interface FlowParticle {
+  mesh: THREE.Mesh;
+  fromId: string;
+  toId: string;
+  progress: number; // 0 to 1
+  speed: number;
 }
 
 @Injectable({
@@ -52,6 +61,13 @@ export class ArchitectureVizService {
   private dragPlane = new THREE.Plane();
   private dragOffset = new THREE.Vector3();
   private draggedNodeId: string | null = null;
+
+  // Simulation State
+  public isSimulationActive: WritableSignal<boolean> = signal(false);
+  private flowParticles: FlowParticle[] = [];
+  private packetGeometry = new THREE.SphereGeometry(0.3, 8, 8);
+  private packetMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+  private cameraOrbitAngle = 0;
   
   // Signals & Events
   public selectedNodeData: WritableSignal<NodeData | null> = signal(null);
@@ -63,7 +79,10 @@ export class ArchitectureVizService {
   private mouse = new THREE.Vector2();
   private resizeObserver: ResizeObserver | null = null;
 
-  constructor(private ngZone: NgZone) {}
+  constructor(
+      private ngZone: NgZone,
+      private registry: ComponentRegistryService
+  ) {}
 
   initialize(container: HTMLElement) {
     this.container = container;
@@ -136,14 +155,37 @@ export class ArchitectureVizService {
     this.interactionMode = mode;
     this.modeSignal.set(mode);
     
-    // Enable/Disable Orbit Controls based on mode
-    this.controls.enabled = (mode === 'camera');
+    // Disable simulation if we switch modes explicitly
+    if (this.isSimulationActive()) {
+        this.toggleSimulation(false);
+    }
     
-    // Visual cursor feedback
+    this.controls.enabled = (mode === 'camera');
     this.renderer.domElement.style.cursor = mode === 'camera' ? 'grab' : 'default';
 
-    // Force update connections to ensure they are consistent with current positions
     this.updateAllConnections();
+  }
+  
+  public toggleSimulation(isActive: boolean) {
+      this.isSimulationActive.set(isActive);
+      
+      if (isActive) {
+          // Switch to camera mode visually but disable controls for auto-orbit
+          this.modeSignal.set('camera');
+          this.interactionMode = 'camera';
+          this.controls.enabled = false;
+          
+          // Calculate current angle based on camera position for smooth start
+          this.cameraOrbitAngle = Math.atan2(this.camera.position.x, this.camera.position.z);
+      } else {
+          this.controls.enabled = true;
+          this.cleanupParticles();
+      }
+  }
+  
+  private cleanupParticles() {
+      this.flowParticles.forEach(p => this.scene.remove(p.mesh));
+      this.flowParticles = [];
   }
 
   public clearScene() {
@@ -160,6 +202,7 @@ export class ArchitectureVizService {
     });
     this.connectionLines.clear();
     this.deselect();
+    this.cleanupParticles();
     this.allNodes.set([]);
   }
 
@@ -168,10 +211,11 @@ export class ArchitectureVizService {
     pos: { x: number, y: number, z: number } = {x: 0, y: 0, z: 0},
     label?: string,
     description: string = 'Description...',
-    colorOverride?: string
+    colorOverride?: string,
+    idOverride?: string
   ): string {
-    const id = crypto.randomUUID();
-    const config = getComponentConfig(type);
+    const id = idOverride || crypto.randomUUID();
+    const config = this.registry.getConfig(type);
     
     const colorHex = colorOverride ? parseInt(colorOverride.replace('#', ''), 16) : config.defaultColor;
 
@@ -284,7 +328,7 @@ export class ArchitectureVizService {
     if (!fromNode || !toNode) return;
     
     // Check Config Rules
-    const fromConfig = getComponentConfig(fromNode.data.type);
+    const fromConfig = this.registry.getConfig(fromNode.data.type);
     const allowed = fromConfig.allowedConnections;
     
     if (allowed !== 'all' && !allowed.includes(toNode.data.type)) {
@@ -497,7 +541,26 @@ export class ArchitectureVizService {
 
   private animate() {
     this.animationId = requestAnimationFrame(() => this.animate());
-    if (this.controls && this.controls.enabled) this.controls.update();
+    
+    // Handle Auto-Orbit if Simulation Active
+    if (this.isSimulationActive()) {
+        this.cameraOrbitAngle += 0.003; // Slow rotation speed
+        const radius = Math.sqrt(this.camera.position.x ** 2 + this.camera.position.z ** 2);
+        // Maintain current height (y), rotate X and Z
+        this.camera.position.x = radius * Math.sin(this.cameraOrbitAngle);
+        this.camera.position.z = radius * Math.cos(this.cameraOrbitAngle);
+        this.camera.lookAt(0, 0, 0);
+        
+        // Spawn Flow Particles (random chance per frame)
+        if (Math.random() > 0.92 && this.connectionLines.size > 0) {
+            this.spawnRandomParticle();
+        }
+        
+        this.updateParticles();
+    } else {
+        // Manual controls only if not simulating
+        if (this.controls && this.controls.enabled) this.controls.update();
+    }
 
     const time = Date.now() * 0.001;
     this.nodes.forEach(node => {
@@ -514,6 +577,52 @@ export class ArchitectureVizService {
     this.renderer.render(this.scene, this.camera);
     this.labelRenderer.render(this.scene, this.camera);
   }
+  
+  private spawnRandomParticle() {
+      // Pick a random connection line
+      const keys = Array.from(this.connectionLines.keys());
+      const randomKey = keys[Math.floor(Math.random() * keys.length)];
+      const line = this.connectionLines.get(randomKey);
+      
+      if (line) {
+          const { fromId, toId } = line.userData;
+          const mesh = new THREE.Mesh(this.packetGeometry, this.packetMaterial);
+          this.scene.add(mesh);
+          
+          this.flowParticles.push({
+              mesh,
+              fromId,
+              toId,
+              progress: 0,
+              speed: 0.01 + Math.random() * 0.01 // Random speed variation
+          });
+      }
+  }
+  
+  private updateParticles() {
+      for (let i = this.flowParticles.length - 1; i >= 0; i--) {
+          const p = this.flowParticles[i];
+          p.progress += p.speed;
+          
+          if (p.progress >= 1) {
+              // Reached destination
+              this.scene.remove(p.mesh);
+              this.flowParticles.splice(i, 1);
+          } else {
+              // Move mesh
+              const fromNode = this.nodes.get(p.fromId);
+              const toNode = this.nodes.get(p.toId);
+              
+              if (fromNode && toNode) {
+                  p.mesh.position.lerpVectors(fromNode.mesh.position, toNode.mesh.position, p.progress);
+              } else {
+                  // Node deleted while packet in transit
+                  this.scene.remove(p.mesh);
+                  this.flowParticles.splice(i, 1);
+              }
+          }
+      }
+  }
 
   private onWindowResize() {
     if (!this.container) return;
@@ -529,6 +638,51 @@ export class ArchitectureVizService {
     if (this.animationId) cancelAnimationFrame(this.animationId);
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.renderer) this.renderer.dispose();
+  }
+  
+  // --- Import / Export ---
+  
+  public exportSceneToJson(): string {
+      const data = Array.from(this.nodes.values()).map(n => n.data);
+      return JSON.stringify(data, null, 2);
+  }
+  
+  public importSceneFromJson(json: string) {
+      try {
+          const data = JSON.parse(json) as NodeData[];
+          if (!Array.isArray(data)) throw new Error('Invalid JSON structure');
+          
+          this.clearScene();
+          
+          // Phase 1: Create all nodes
+          data.forEach(nodeData => {
+              this.addNode(
+                  nodeData.type,
+                  nodeData.position,
+                  nodeData.label,
+                  nodeData.description,
+                  nodeData.color,
+                  nodeData.id // Preserve ID
+              );
+          });
+          
+          // Phase 2: Create connections
+          // We must do this after all nodes exist
+          data.forEach(nodeData => {
+             if (nodeData.connectedTo && Array.isArray(nodeData.connectedTo)) {
+                 nodeData.connectedTo.forEach(targetId => {
+                     // We use the public connectNodes to ensure visuals are created
+                     this.connectNodes(nodeData.id, targetId);
+                 });
+             } 
+          });
+          
+          console.log('Scene imported successfully');
+          
+      } catch (e) {
+          console.error('Failed to import scene', e);
+          alert('Failed to import file. Please check if it is a valid JSON export.');
+      }
   }
 
   // --- Default Scenario ---
