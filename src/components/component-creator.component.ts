@@ -1,10 +1,10 @@
 
-import { Component, ElementRef, ViewChild, AfterViewInit, OnDestroy, signal, computed, effect } from '@angular/core';
+import { Component, ElementRef, ViewChild, AfterViewInit, OnDestroy, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import * as THREE from 'three';
 import { ComponentRegistryService } from '../services/component-registry.service';
-import { ComponentConfig, NodeType } from '../config/component-config';
+import { ComponentConfig } from '../config/component-config';
 
 @Component({
   selector: 'app-component-creator',
@@ -24,9 +24,7 @@ import { ComponentConfig, NodeType } from '../config/component-config';
           <div class="text-[10px] text-slate-500 px-2 py-1 uppercase font-bold">System</div>
           @for (comp of systemComponents(); track comp.id) {
             <button (click)="selectComponent(comp)" 
-                    [class.bg-slate-800]="selectedId() === comp.id"
-                    [class.border-cyan-500]="selectedId() === comp.id"
-                    class="w-full text-left px-3 py-2 rounded border border-transparent hover:bg-slate-800/50 flex items-center gap-2 group">
+                    class="w-full text-left px-3 py-2 rounded border border-transparent hover:bg-slate-800/50 flex items-center gap-2 group cursor-pointer transition-colors">
               <div [class]="comp.colorClass + ' ' + comp.iconClass" class="w-3 h-3 shadow-sm"></div>
               <span class="text-sm truncate">{{ comp.label }}</span>
             </button>
@@ -37,7 +35,7 @@ import { ComponentConfig, NodeType } from '../config/component-config';
             <button (click)="selectComponent(comp)" 
                     [class.bg-slate-800]="selectedId() === comp.id"
                     [class.border-cyan-500]="selectedId() === comp.id"
-                    class="w-full text-left px-3 py-2 rounded border border-transparent hover:bg-slate-800/50 flex items-center gap-2 group">
+                    class="w-full text-left px-3 py-2 rounded border border-transparent hover:bg-slate-800/50 flex items-center gap-2 group cursor-pointer transition-colors">
               <div [class]="comp.colorClass + ' ' + comp.iconClass" class="w-3 h-3 shadow-sm"></div>
               <span class="text-sm truncate">{{ comp.label }}</span>
             </button>
@@ -56,15 +54,20 @@ import { ComponentConfig, NodeType } from '../config/component-config';
 
       <!-- CENTER PANE: Editor -->
       <div class="flex-1 flex flex-col border-r border-slate-700 overflow-hidden relative">
-        @if (editForm) {
+        @if (activeConfig()) {
           <div class="p-4 border-b border-slate-700 bg-slate-900/80 flex justify-between items-center">
             <div>
               <h2 class="text-sm font-bold text-white">{{ isEditingExisting ? 'Edit Component' : 'New Component' }}</h2>
-              <p class="text-xs text-slate-400" *ngIf="editForm.parentId">Extends: {{ getParentName(editForm.parentId) }}</p>
+              @if (activeConfig()!.parentId) {
+                <p class="text-xs text-slate-400">Extends: {{ getParentName(activeConfig()!.parentId!) }}</p>
+              }
             </div>
             
             <div class="flex gap-2">
-              <button *ngIf="isEditingExisting && !editForm.isSystem" (click)="deleteCurrent()" class="text-red-400 text-xs px-3 hover:underline">Delete</button>
+              @if (isEditingExisting && !activeConfig()!.isSystem) {
+                <button (click)="deleteCurrent()" class="text-red-400 text-xs px-3 hover:underline">Delete</button>
+              }
+              <button (click)="cancel()" class="text-slate-400 hover:text-white text-xs px-3 hover:underline">Cancel</button>
               <button (click)="save()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1 rounded text-xs font-bold">Save</button>
             </div>
           </div>
@@ -77,16 +80,19 @@ import { ComponentConfig, NodeType } from '../config/component-config';
               <div class="grid grid-cols-2 gap-4">
                 <div>
                   <label class="block text-xs text-slate-400 mb-1">Label Name</label>
-                  <input [(ngModel)]="editForm.label" (ngModelChange)="updatePreview()" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500">
+                  <input [ngModel]="activeConfig()!.label" (ngModelChange)="updateField('label', $event)" 
+                         class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500">
                 </div>
                  <div>
                   <label class="block text-xs text-slate-400 mb-1">Category</label>
-                  <input [(ngModel)]="editForm.category" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500">
+                  <input [ngModel]="activeConfig()!.category" (ngModelChange)="updateField('category', $event)"
+                         class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500">
                 </div>
               </div>
               <div>
                 <label class="block text-xs text-slate-400 mb-1">Description</label>
-                <textarea [(ngModel)]="editForm.description" rows="2" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500"></textarea>
+                <textarea [ngModel]="activeConfig()!.description" (ngModelChange)="updateField('description', $event)"
+                          rows="2" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500"></textarea>
               </div>
             </section>
 
@@ -96,7 +102,8 @@ import { ComponentConfig, NodeType } from '../config/component-config';
               <div class="grid grid-cols-2 gap-4">
                 <div>
                   <label class="block text-xs text-slate-400 mb-1">Geometry / Shape</label>
-                  <select [(ngModel)]="editForm.geometry" (ngModelChange)="updatePreview()" class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500">
+                  <select [ngModel]="activeConfig()!.geometry" (ngModelChange)="updateField('geometry', $event)"
+                          class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-cyan-500">
                     <option value="sphere">Sphere</option>
                     <option value="box">Box</option>
                     <option value="cylinder">Cylinder</option>
@@ -110,14 +117,13 @@ import { ComponentConfig, NodeType } from '../config/component-config';
                   <label class="block text-xs text-slate-400 mb-1">Color (Hex)</label>
                   <div class="flex gap-2">
                     <input type="color" [value]="colorHexStr" (input)="onColorChange($event)" class="h-8 w-12 bg-transparent cursor-pointer rounded border border-slate-700">
-                     <!-- Helper to display hex text -->
                      <span class="text-xs font-mono self-center text-slate-400">{{ colorHexStr }}</span>
                   </div>
                 </div>
                 <div>
                   <label class="block text-xs text-slate-400 mb-1">Scale</label>
-                  <input type="range" min="0.5" max="5" step="0.1" [(ngModel)]="editForm.scale" (ngModelChange)="updatePreview()" class="w-full accent-cyan-500">
-                  <div class="text-right text-xs text-slate-500">{{ editForm.scale }}x</div>
+                  <input type="range" min="0.5" max="5" step="0.1" [ngModel]="activeConfig()!.scale" (ngModelChange)="updateField('scale', $event)" class="w-full accent-cyan-500">
+                  <div class="text-right text-xs text-slate-500">{{ activeConfig()!.scale }}x</div>
                 </div>
               </div>
             </section>
@@ -129,7 +135,6 @@ import { ComponentConfig, NodeType } from '../config/component-config';
               <div>
                 <label class="block text-xs text-slate-400 mb-2">Allowed Outbound Connections</label>
                 <div class="bg-slate-950 border border-slate-700 rounded p-2 max-h-40 overflow-y-auto grid grid-cols-1 gap-1">
-                   <!-- "All" Toggle -->
                    <label class="flex items-center gap-2 text-sm hover:bg-slate-900 p-1 rounded cursor-pointer">
                      <input type="checkbox" [checked]="isAllowedAll()" (change)="toggleAllowed('all')">
                      <span class="font-bold text-cyan-200">Allow All</span>
@@ -160,18 +165,18 @@ import { ComponentConfig, NodeType } from '../config/component-config';
          <div class="p-2 border-b border-slate-800 text-center">
            <span class="text-[10px] font-bold text-slate-500 uppercase">Live Preview</span>
          </div>
-         <div class="flex-1 relative" #previewContainer>
-           <!-- ThreeJS Canvas appended here -->
-         </div>
+         <div class="flex-1 relative" #previewContainer></div>
          <div class="p-4 border-t border-slate-800 text-xs text-slate-500 space-y-2">
-           <p><strong>ID:</strong> {{ editForm?.id || '...' }}</p>
-           <p><strong>Type Slug:</strong> {{ editForm?.type || '...' }}</p>
-           <div class="mt-4 p-2 bg-slate-900 rounded border border-slate-800">
-             <div class="flex items-center gap-2">
-                <div [class]="editForm?.colorClass" class="w-3 h-3 rounded-full"></div>
-                <span>Icon Style Preview</span>
+           @if (activeConfig(); as form) {
+             <p><strong>ID:</strong> {{ form.id }}</p>
+             <p><strong>Type Slug:</strong> {{ form.type }}</p>
+             <div class="mt-4 p-2 bg-slate-900 rounded border border-slate-800">
+               <div class="flex items-center gap-2">
+                  <div [class]="form.colorClass" class="w-3 h-3 rounded-full"></div>
+                  <span>Icon Style Preview</span>
+               </div>
              </div>
-           </div>
+           }
          </div>
       </div>
 
@@ -188,8 +193,8 @@ export class ComponentCreatorComponent implements AfterViewInit, OnDestroy {
   
   selectedId = signal<string | null>(null);
   
-  // Local Mutable Form State
-  editForm: ComponentConfig | null = null;
+  // Active Config (The form state)
+  activeConfig = signal<ComponentConfig | null>(null);
   isEditingExisting = false;
 
   // Previewer State
@@ -214,75 +219,90 @@ export class ComponentCreatorComponent implements AfterViewInit, OnDestroy {
 
   selectComponent(comp: ComponentConfig) {
     if (comp.isSystem) {
-        // System components are read-only-ish, but we allow "Subclassing" them essentially
-        // For this UI, we will act as "Creating New from Base" if a system component is clicked?
-        // Or strictly Allow Editing if we want? 
-        // Let's go with: Click System -> Prompt to Subclass. Click Custom -> Edit.
-        
+        // System components are read-only, suggest inheritance
         if (confirm(`System components are read-only. Create a new component based on '${comp.label}'?`)) {
             this.createFrom(comp);
         }
     } else {
+        // Deep copy for form
+        const copy = JSON.parse(JSON.stringify(comp));
         this.selectedId.set(comp.id);
-        this.editForm = JSON.parse(JSON.stringify(comp)); // Deep copy for form
+        this.activeConfig.set(copy);
         this.isEditingExisting = true;
         this.updatePreview();
     }
   }
 
   startNew() {
-    const base = this.systemComponents()[0]; // Default to Client or first available
+    const base = this.systemComponents()[0]; // Default to first available
     this.createFrom(base);
   }
 
   createFrom(parent: ComponentConfig) {
-    this.editForm = this.registry.createDerivedComponent(parent.id, `New ${parent.label}`);
-    this.selectedId.set(null); // It's not in the list yet
+    const newConfig = this.registry.createDerivedComponent(parent.id, `New ${parent.label}`);
+    this.activeConfig.set(newConfig);
+    this.selectedId.set(null);
     this.isEditingExisting = false;
     this.updatePreview();
   }
 
-  save() {
-    if (!this.editForm) return;
+  cancel() {
+    this.activeConfig.set(null);
+    this.selectedId.set(null);
+  }
 
-    // Update derived UI classes based on color/shape roughly (for the icon)
-    // This is a simplification. Real app might need a Tailwind Class picker.
-    // We'll keep the parent's icon class for now or simple defaults.
+  save() {
+    const form = this.activeConfig();
+    if (!form) return;
     
     if (this.isEditingExisting) {
-        this.registry.updateComponent(this.editForm.id, this.editForm);
+        this.registry.updateComponent(form.id, form);
     } else {
-        this.registry.addComponent(this.editForm);
-        this.selectedId.set(this.editForm.id); // Select it
+        this.registry.addComponent(form);
+        this.selectedId.set(form.id); 
         this.isEditingExisting = true;
     }
     alert('Component Saved!');
   }
 
   deleteCurrent() {
-      if (this.editForm && !this.editForm.isSystem) {
+      const form = this.activeConfig();
+      if (form && !form.isSystem) {
           if(confirm('Delete this component definition? Existing nodes on the canvas may break.')) {
-              this.registry.deleteComponent(this.editForm.id);
-              this.editForm = null;
+              this.registry.deleteComponent(form.id);
+              this.activeConfig.set(null);
           }
       }
   }
 
-  // --- Form Helpers ---
+  // --- Form Updates ---
+
+  updateField(field: keyof ComponentConfig, value: any) {
+    const current = this.activeConfig();
+    if (current) {
+        // Create new object reference to trigger signal if needed, but here we just mutate the copy
+        // and manually trigger preview. Since activeConfig is a signal of a mutable object,
+        // we can just mutate it. But for safety with checking activeConfig(), we keep it simple.
+        (current as any)[field] = value;
+        this.updatePreview();
+    }
+  }
 
   getParentName(id: string): string {
     return this.registry.getConfigById(id)?.label || 'Unknown';
   }
 
   get colorHexStr(): string {
-      if (!this.editForm) return '#ffffff';
-      return '#' + new THREE.Color(this.editForm.defaultColor).getHexString();
+      const form = this.activeConfig();
+      if (!form) return '#ffffff';
+      return '#' + new THREE.Color(form.defaultColor).getHexString();
   }
 
   onColorChange(event: Event) {
       const val = (event.target as HTMLInputElement).value;
-      if (this.editForm) {
-          this.editForm.defaultColor = parseInt(val.replace('#', ''), 16);
+      const form = this.activeConfig();
+      if (form) {
+          form.defaultColor = parseInt(val.replace('#', ''), 16);
           this.updatePreview();
       }
   }
@@ -294,36 +314,38 @@ export class ComponentCreatorComponent implements AfterViewInit, OnDestroy {
   // --- Connection Logic ---
 
   isAllowedAll(): boolean {
-      return this.editForm?.allowedConnections === 'all';
+      const form = this.activeConfig();
+      return form ? form.allowedConnections === 'all' : false;
   }
 
   isConnectionAllowed(type: string): boolean {
-      if (!this.editForm) return false;
-      if (this.editForm.allowedConnections === 'all') return true;
-      return this.editForm.allowedConnections.includes(type);
+      const form = this.activeConfig();
+      if (!form) return false;
+      if (form.allowedConnections === 'all') return true;
+      return form.allowedConnections.includes(type);
   }
 
   toggleAllowed(type: string | 'all') {
-      if (!this.editForm) return;
+      const form = this.activeConfig();
+      if (!form) return;
 
       if (type === 'all') {
-          if (this.editForm.allowedConnections === 'all') {
-              this.editForm.allowedConnections = []; // Reset to none
+          if (form.allowedConnections === 'all') {
+              form.allowedConnections = [];
           } else {
-              this.editForm.allowedConnections = 'all';
+              form.allowedConnections = 'all';
           }
       } else {
-          // If strictly array
-          let current: string[] = Array.isArray(this.editForm.allowedConnections) 
-             ? this.editForm.allowedConnections 
-             : []; // If was 'all', clear it to start specific list
+          let current: string[] = Array.isArray(form.allowedConnections) 
+             ? form.allowedConnections 
+             : [];
           
           if (current.includes(type)) {
               current = current.filter(t => t !== type);
           } else {
               current.push(type);
           }
-          this.editForm.allowedConnections = current;
+          form.allowedConnections = current;
       }
   }
 
@@ -331,11 +353,12 @@ export class ComponentCreatorComponent implements AfterViewInit, OnDestroy {
   // --- 3D Preview Logic ---
 
   initPreview() {
+    if (!this.previewContainer) return;
     const width = this.previewContainer.nativeElement.clientWidth;
-    const height = 300; // Fixed height for preview area
+    const height = 300; 
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x020617); // Slate 950
+    this.scene.background = new THREE.Color(0x020617);
 
     this.camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 100);
     this.camera.position.z = 4;
@@ -353,17 +376,16 @@ export class ComponentCreatorComponent implements AfterViewInit, OnDestroy {
   }
 
   updatePreview() {
-    if (!this.editForm || !this.scene) return;
+    const form = this.activeConfig();
+    if (!form || !this.scene) return;
 
-    // Remove old mesh
     if (this.mesh) {
         this.scene.remove(this.mesh);
         this.mesh.geometry.dispose();
     }
 
-    // Create Geometry
     let geo: THREE.BufferGeometry;
-    switch (this.editForm.geometry) {
+    switch (form.geometry) {
       case 'sphere': geo = new THREE.SphereGeometry(0.7, 32, 16); break;
       case 'torus': geo = new THREE.TorusGeometry(0.6, 0.2, 16, 100); break;
       case 'octahedron': geo = new THREE.OctahedronGeometry(1); break;
@@ -375,15 +397,13 @@ export class ComponentCreatorComponent implements AfterViewInit, OnDestroy {
     }
 
     const mat = new THREE.MeshPhongMaterial({
-        color: this.editForm.defaultColor,
+        color: form.defaultColor,
         shininess: 100,
         flatShading: true
     });
 
     this.mesh = new THREE.Mesh(geo, mat);
-    // Apply Scale visual, but normalize it a bit for the small preview window
-    const scale = this.editForm.scale; 
-    // We normalize scale visually so huge items don't clip camera
+    const scale = form.scale; 
     const displayScale = Math.min(Math.max(scale, 0.5), 2.5); 
     this.mesh.scale.setScalar(displayScale);
     
@@ -396,6 +416,8 @@ export class ComponentCreatorComponent implements AfterViewInit, OnDestroy {
           this.mesh.rotation.x += 0.01;
           this.mesh.rotation.y += 0.01;
       }
-      this.renderer.render(this.scene, this.camera);
+      if (this.renderer && this.scene && this.camera) {
+        this.renderer.render(this.scene, this.camera);
+      }
   }
 }

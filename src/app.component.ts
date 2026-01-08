@@ -37,6 +37,20 @@ export class AppComponent implements AfterViewInit, OnDestroy {
   // Inspector Form Data
   selectedNode = this.vizService.selectedNodeData;
   allNodes = this.vizService.allNodes;
+
+  // Scene Settings
+  bgColor = '#000510';
+
+  // Context Menu State
+  contextMenu = signal<{ 
+    visible: boolean, 
+    x: number, 
+    y: number, 
+    targetNodeId: string | null,
+    worldPos: {x:number, y:number, z:number} | null 
+  }>({
+    visible: false, x: 0, y: 0, targetNodeId: null, worldPos: null
+  });
   
   // Computed list of nodes we can connect to (not self, not already connected, AND allowed by config)
   availableTargets = computed(() => {
@@ -131,6 +145,57 @@ export class AppComponent implements AfterViewInit, OnDestroy {
       this.activeTab.set(tab);
   }
 
+  // --- Context Menu Handlers ---
+
+  onContextMenu(event: MouseEvent) {
+      event.preventDefault();
+      
+      // Determine if we clicked a node
+      const hitId = this.vizService.getHitNodeId(event);
+      // Determine world position for potential new node
+      const worldPos = this.vizService.getWorldPosition(event);
+
+      // If we hit a node, select it right away
+      if (hitId) {
+          this.vizService.selectNode(hitId);
+      }
+
+      this.contextMenu.set({
+          visible: true,
+          x: event.clientX,
+          y: event.clientY,
+          targetNodeId: hitId,
+          worldPos: worldPos
+      });
+  }
+
+  closeContextMenu() {
+      if (this.contextMenu().visible) {
+          this.contextMenu.update(s => ({ ...s, visible: false }));
+      }
+  }
+
+  onContextAction(action: 'new' | 'edit' | 'delete', payload?: any) {
+      const menuState = this.contextMenu();
+      
+      if (action === 'delete') {
+          // If we right-clicked a node, delete it.
+          // Otherwise check if a node is currently selected (fallback logic)
+          const target = menuState.targetNodeId || this.vizService.selectedNodeData()?.id;
+          if (target) {
+              this.vizService.deleteNode(target);
+          }
+      } else if (action === 'new' && payload) {
+          // Payload is the Type ID
+          const pos = menuState.worldPos || { x: 0, y: 0, z: 0 };
+          const id = this.vizService.addNode(payload, pos);
+          this.vizService.selectNode(id);
+          this.setMode('edit'); // Switch to edit so they can fine tune
+      }
+
+      this.closeContextMenu();
+  }
+
   // --- Actions ---
   
   setMode(mode: 'camera' | 'edit') {
@@ -161,6 +226,18 @@ export class AppComponent implements AfterViewInit, OnDestroy {
        this.vizService.loadDefaultScene();
      }
   }
+  
+  // --- Camera Controls ---
+  
+  updateBgColor(color: string) {
+    this.bgColor = color;
+    this.vizService.setBackgroundColor(color);
+  }
+  
+  zoomIn() { this.vizService.zoomCamera(10); }
+  zoomOut() { this.vizService.zoomCamera(-10); }
+  rotateLeft() { this.vizService.rotateCamera(0.2); }
+  rotateRight() { this.vizService.rotateCamera(-0.2); }
   
   // --- Save / Load ---
   

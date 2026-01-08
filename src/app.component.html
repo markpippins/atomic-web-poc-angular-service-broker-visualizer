@@ -1,5 +1,6 @@
 
-<div class="relative w-full h-screen bg-slate-950 overflow-hidden font-sans text-slate-200 flex flex-col">
+<div class="relative w-full h-screen bg-slate-950 overflow-hidden font-sans text-slate-200 flex flex-col" 
+     (window:click)="closeContextMenu()">
   
   <!-- Main Header / Tab Bar -->
   <div class="h-12 border-b border-slate-800 bg-slate-950 flex justify-between items-center px-4 shrink-0 z-30 relative">
@@ -67,6 +68,23 @@
             </button>
          </div>
          
+         <!-- Camera & Scene Controls -->
+         <div class="flex gap-2 border-l border-slate-700 pl-4 items-center">
+             <!-- Bg Color -->
+             <div class="flex items-center gap-1 bg-slate-800 rounded px-2 py-1 border border-slate-700" title="Background Color">
+                <input type="color" [ngModel]="bgColor" (ngModelChange)="updateBgColor($event)" 
+                       class="w-4 h-4 rounded cursor-pointer bg-transparent border-none p-0">
+             </div>
+             
+             <!-- Camera Controls -->
+             <div class="flex bg-slate-800 rounded border border-slate-700">
+                <button (click)="zoomOut()" class="px-2 py-1 hover:bg-slate-700 text-slate-400 hover:text-white border-r border-slate-700 text-xs" title="Zoom Out">-</button>
+                <button (click)="zoomIn()" class="px-2 py-1 hover:bg-slate-700 text-slate-400 hover:text-white border-r border-slate-700 text-xs" title="Zoom In">+</button>
+                <button (click)="rotateLeft()" class="px-2 py-1 hover:bg-slate-700 text-slate-400 hover:text-white border-r border-slate-700 text-xs" title="Rotate Left">↺</button>
+                <button (click)="rotateRight()" class="px-2 py-1 hover:bg-slate-700 text-slate-400 hover:text-white text-xs" title="Rotate Right">↻</button>
+             </div>
+         </div>
+
          <div class="flex gap-2 border-l border-slate-700 pl-4">
            <button (click)="resetDemo()" class="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-xs hover:bg-slate-700 transition">
              Reset
@@ -83,9 +101,49 @@
   <div class="flex-1 relative overflow-hidden">
     
     <!-- CANVAS TAB CONTENT -->
-    <div [class.invisible]="activeTab() !== 'canvas'" class="absolute inset-0 w-full h-full">
+    <div [class.invisible]="activeTab() !== 'canvas'" class="absolute inset-0 w-full h-full" 
+         (contextmenu)="onContextMenu($event)">
+         
         <!-- 3D Canvas (Background) -->
         <div #canvasContainer class="w-full h-full absolute top-0 left-0 z-0"></div>
+
+        <!-- Context Menu -->
+        @if (contextMenu().visible) {
+            <div class="fixed bg-slate-800 border border-slate-600 rounded shadow-xl z-50 py-1 min-w-[150px] flex flex-col"
+                 [style.left.px]="contextMenu().x"
+                 [style.top.px]="contextMenu().y">
+                 
+                 <!-- NEW Submenu -->
+                 <div class="group relative px-4 py-2 hover:bg-slate-700 cursor-pointer flex justify-between items-center text-xs text-white">
+                    <span>New...</span>
+                    <span class="text-[10px] text-slate-400">▶</span>
+                    
+                    <!-- Nested Submenu -->
+                    <div class="absolute left-full top-0 ml-1 bg-slate-800 border border-slate-600 rounded shadow-xl py-1 min-w-[160px] hidden group-hover:block max-h-64 overflow-y-auto">
+                        @for (tool of toolItems(); track tool.type) {
+                           <button (click)="$event.stopPropagation(); onContextAction('new', tool.type)" 
+                                   class="w-full text-left px-4 py-2 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
+                               <div [class]="tool.colorClass + ' ' + tool.iconClass" class="w-2 h-2"></div>
+                               {{ tool.label }}
+                           </button>
+                        }
+                    </div>
+                 </div>
+
+                 <div class="h-px bg-slate-700 my-1"></div>
+
+                 <button disabled class="w-full text-left px-4 py-2 text-xs text-slate-500 cursor-not-allowed">
+                     Edit...
+                 </button>
+
+                 <button (click)="onContextAction('delete')" 
+                         [disabled]="!contextMenu().targetNodeId"
+                         [class.opacity-50]="!contextMenu().targetNodeId"
+                         class="w-full text-left px-4 py-2 hover:bg-red-900/50 text-xs text-red-300 hover:text-red-200">
+                     Delete
+                 </button>
+            </div>
+        }
 
         <!-- Hidden File Input -->
         <input type="file" #fileInput (change)="onFileSelected($event)" accept=".json" class="hidden">

@@ -149,6 +149,87 @@ export class ArchitectureVizService {
     setTimeout(() => this.onWindowResize(), 0);
   }
 
+  // --- View Control ---
+
+  public setBackgroundColor(color: string) {
+      if (this.scene) {
+          const threeColor = new THREE.Color(color);
+          this.scene.background = threeColor;
+          this.scene.fog = new THREE.FogExp2(threeColor.getHex(), 0.008);
+      }
+  }
+
+  public zoomCamera(amount: number) {
+      if (!this.camera || !this.controls) return;
+      const distance = this.camera.position.distanceTo(this.controls.target);
+      const newDist = distance - amount;
+      
+      if (newDist < 5 || newDist > 500) return; // Clamping
+      
+      const dir = new THREE.Vector3().subVectors(this.camera.position, this.controls.target).normalize();
+      this.camera.position.copy(this.controls.target).add(dir.multiplyScalar(newDist));
+      this.controls.update();
+  }
+
+  public rotateCamera(angle: number) {
+      if (!this.camera || !this.controls) return;
+      
+      const offset = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      
+      // Rotate around Y axis
+      const newX = offset.x * cos - offset.z * sin;
+      const newZ = offset.x * sin + offset.z * cos;
+      
+      offset.x = newX;
+      offset.z = newZ;
+      
+      this.camera.position.copy(this.controls.target).add(offset);
+      this.camera.lookAt(this.controls.target);
+      this.controls.update();
+  }
+  
+  // --- Raycasting Helpers for Context Menu ---
+  
+  public getHitNodeId(event: MouseEvent): string | null {
+      const intersects = this.raycast(event);
+      if (intersects.length > 0) {
+          return intersects[0].object.userData['id'];
+      }
+      return null;
+  }
+  
+  public getWorldPosition(event: MouseEvent): {x: number, y: number, z: number} {
+      // Calculate a point on a plane facing the camera, passing through origin
+      // or at least a consistent depth for new items
+      
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(mouse, this.camera);
+      
+      const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0); // Default Z=0 plane
+      
+      // If we rotated the camera significantly, picking a Z=0 plane might be hard
+      // Let's use a plane that faces the camera
+      const normal = new THREE.Vector3();
+      this.camera.getWorldDirection(normal);
+      // We want a plane with this normal. 
+      // If we want new objects to appear "at the center" depth roughly, we pass it through (0,0,0)
+      plane.setFromNormalAndCoplanarPoint(normal, new THREE.Vector3(0,0,0));
+      
+      const target = new THREE.Vector3();
+      if (raycaster.ray.intersectPlane(plane, target)) {
+          return { x: target.x, y: target.y, z: target.z };
+      }
+      return { x: 0, y: 0, z: 0 };
+  }
+
   // --- Core Operations ---
 
   public setInteractionMode(mode: 'camera' | 'edit') {
@@ -690,8 +771,8 @@ export class ArchitectureVizService {
   public loadDefaultScene() {
     this.clearScene();
 
-    const host = this.addNode('host', { x: 0, y: 35, z: -10 }, 'Host Server', 'Central Authority');
-    const obs = this.addNode('internal', { x: 15, y: 38, z: -10 }, 'Observability', 'ELK Stack', '#7c3aed');
+    const host = this.addNode('rest-api', { x: 0, y: 35, z: -10 }, 'Host Service', 'Central Authority');
+    const obs = this.addNode('grpc-service', { x: 15, y: 38, z: -10 }, 'Observability', 'ELK Stack', '#7c3aed');
     this.connectNodes(host, obs);
 
     const gateway = this.addNode('gateway', { x: 0, y: 0, z: 0 }, 'API Gateway', 'Ingress');
@@ -699,20 +780,20 @@ export class ArchitectureVizService {
     this.connectNodes(proxy, gateway);
     this.connectNodes(gateway, host);
 
-    const broker = this.addNode('transformer', { x: 25, y: 0, z: 0 }, 'Service Broker', 'Message Bus', '#f97316');
+    const broker = this.addNode('message-queue', { x: 25, y: 0, z: 0 }, 'Service Broker', 'Message Bus', '#f97316');
     this.connectNodes(gateway, broker);
 
-    const auth = this.addNode('internal', { x: 25, y: 15, z: 0 }, 'Auth Svc', 'Security', '#14b8a6');
+    const auth = this.addNode('grpc-service', { x: 25, y: 15, z: 0 }, 'Auth Svc', 'Security', '#14b8a6');
     this.connectNodes(gateway, auth);
     
-    const extA = this.addNode('external', { x: 50, y: 10, z: 5 }, 'External A', 'Payment Provider');
-    const extB = this.addNode('external', { x: 50, y: -10, z: 5 }, 'External B', 'Logistics');
+    const extA = this.addNode('rest-api', { x: 50, y: 10, z: 5 }, 'External A', 'Payment Provider');
+    const extB = this.addNode('rest-api', { x: 50, y: -10, z: 5 }, 'External B', 'Logistics');
     
     this.connectNodes(broker, extA);
     this.connectNodes(broker, extB);
 
     for(let i=0; i<3; i++) {
-        const c = this.addNode('client', { x: -50, y: (i-1)*10, z: 0 });
+        const c = this.addNode('web-app', { x: -50, y: (i-1)*10, z: 0 });
         this.connectNodes(c, proxy);
     }
   }
